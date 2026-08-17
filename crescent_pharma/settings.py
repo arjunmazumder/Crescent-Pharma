@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'core',
     'hr',
     'inventory',
+    'sales',
     'api',
 ]
 
@@ -135,6 +136,7 @@ SPECTACULAR_SETTINGS = {
         {'name': 'HR - Holidays & Weekends', 'description': 'Public holidays and weekly off-day configurations'},
         {'name': 'Products & Categories', 'description': 'Product catalog, categories, and attributes management'},
         {'name': 'Inventory & Stock Management', 'description': 'Warehouses, stock levels, batch/expiry tracking, and stock movements'},
+        {'name': 'Customers & Sales Orders', 'description': 'Customer directory, client orders, and order history'},
     ],
 }
 

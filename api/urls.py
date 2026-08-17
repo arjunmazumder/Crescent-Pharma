@@ -8,7 +8,8 @@ from .views import (
     OfficeLocationViewSet, SalaryStructureViewSet, PayrollApprovalViewSet,
     LeaveRequestViewSet,
     CategoryViewSet, AttributeViewSet, AttributeValueViewSet,
-    ProductViewSet, WarehouseViewSet, StockLevelViewSet, StockMovementViewSet
+    ProductViewSet, WarehouseViewSet, StockLevelViewSet, StockMovementViewSet,
+    CustomerViewSet, CustomerOrderViewSet
 )
 
 router = DefaultRouter()
@@ -35,6 +36,10 @@ router.register(r'products', ProductViewSet, basename='products')
 router.register(r'warehouses', WarehouseViewSet, basename='warehouses')
 router.register(r'stock-levels', StockLevelViewSet, basename='stocklevels')
 router.register(r'stock-movements', StockMovementViewSet, basename='stockmovements')
+
+# Customers & Sales Orders routes
+router.register(r'customers', CustomerViewSet, basename='customers')
+router.register(r'customer-orders', CustomerOrderViewSet, basename='customerorders')
 
 urlpatterns = [
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
