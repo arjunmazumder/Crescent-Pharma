@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Django
+*.log
+local_settings.py
+
+
+# Media and Static files
+media/
+staticfiles/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pro_env/
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Gemini/Antigravity Agent
+.gemini/
+db.sqlite3
