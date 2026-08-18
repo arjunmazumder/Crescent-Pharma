@@ -253,7 +253,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
                 value={
                     'userId': 3,
                     'month': 8,
-                    'year': 2026
+                    'year': 2026,
+                    'approverRoleId': 1
                 },
                 request_only=True
             )
@@ -261,12 +262,16 @@ class PayrollViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_path='generate')
     def generate_payroll(self, request):
+        from core.models import Role
         user_id = request.data.get('userId') or request.data.get('user_id')
         month = request.data.get('month')
         year = request.data.get('year')
+        approver_role_id = request.data.get('approverRoleId') or request.data.get('currentApproverRole') or request.data.get('approver_role_id')
 
         if not all([user_id, month, year]):
             return Response({'error': 'userId, month, and year are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        approver_role = Role.objects.filter(id=approver_role_id).first() if approver_role_id else None
 
         try:
             target_user = User.objects.get(id=user_id)
@@ -274,7 +279,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
                 user=target_user,
                 month=int(month),
                 year=int(year),
-                generated_by=request.user
+                generated_by=request.user,
+                current_approver_role=approver_role
             )
             return Response({
                 'message': f"Monthly payroll calculated successfully for {target_user.username}",
@@ -294,7 +300,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
                 'Generate All Payroll Example',
                 value={
                     'month': 8,
-                    'year': 2026
+                    'year': 2026,
+                    'approverRoleId': 2
                 },
                 request_only=True
             )
@@ -302,14 +309,17 @@ class PayrollViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_path='generate-all')
     def generate_all_payrolls(self, request):
+        from core.models import Role
         month = request.data.get('month')
         year = request.data.get('year')
+        approver_role_id = request.data.get('approverRoleId') or request.data.get('currentApproverRole') or request.data.get('approver_role_id')
 
         if not all([month, year]):
             return Response({'error': 'month and year are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         month = int(month)
         year = int(year)
+        approver_role = Role.objects.filter(id=approver_role_id).first() if approver_role_id else None
         employees = User.objects.filter(is_active=True, salary_structures__isnull=False).distinct()
         
         generated = []
@@ -317,7 +327,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         for emp in employees:
             try:
-                p = PayrollService.calculate_user_payroll(emp, month, year, generated_by=request.user)
+                p = PayrollService.calculate_user_payroll(emp, month, year, generated_by=request.user, current_approver_role=approver_role)
                 generated.append(PayrollSerializer(p).data)
             except Exception as e:
                 errors.append({'userId': emp.id, 'username': emp.username, 'error': str(e)})
@@ -406,8 +416,21 @@ class PayrollViewSet(viewsets.ModelViewSet):
         if payroll.status == Payroll.STATUS_CHOICES['PAID']:
             return Response({'error': 'Cannot approve a payroll that is already PAID.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        remarks = request.data.get('remarks') or 'Approved by manager'
+        role_to_record = request.user.role or payroll.current_approver_role or Role.objects.filter(role_name__icontains='Admin').first() or Role.objects.first()
+
         payroll.status = Payroll.STATUS_CHOICES['APPROVED']
         payroll.save()
+
+        # Automatically log the approval audit entry
+        if role_to_record:
+            PayrollApproval.objects.create(
+                payroll=payroll,
+                approver=request.user,
+                role=role_to_record,
+                status=PayrollApproval.STATUS_CHOICES['APPROVED'],
+                remarks=remarks
+            )
 
         return Response({
             'message': f"Payroll for {payroll.user.username} approved successfully.",
@@ -445,9 +468,21 @@ class PayrollViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        remarks = request.data.get('remarks') or request.data.get('rejectionReason', '')
+        remarks = request.data.get('remarks') or request.data.get('rejectionReason', 'Rejected by manager')
+        role_to_record = request.user.role or payroll.current_approver_role or Role.objects.filter(role_name__icontains='Admin').first() or Role.objects.first()
+
         payroll.status = Payroll.STATUS_CHOICES['REJECTED']
         payroll.save()
+
+        # Automatically log the rejection audit entry
+        if role_to_record:
+            PayrollApproval.objects.create(
+                payroll=payroll,
+                approver=request.user,
+                role=role_to_record,
+                status=PayrollApproval.STATUS_CHOICES['REJECTED'],
+                remarks=remarks
+            )
 
         return Response({
             'message': f"Payroll for {payroll.user.username} rejected.",

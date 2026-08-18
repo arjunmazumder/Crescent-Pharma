@@ -104,7 +104,7 @@ class AttendanceService:
 
 class PayrollService:
     @staticmethod
-    def calculate_user_payroll(user, month, year, generated_by=None):
+    def calculate_user_payroll(user, month, year, generated_by=None, current_approver_role=None):
         """
         Computes monthly payroll for a specific user based on SalaryStructure,
         working days, absent days, active loans, and approved tour allowances.
@@ -197,6 +197,11 @@ class PayrollService:
         total_deductions = unpaid_deduction + loan_deduction
         net_payable = max(Decimal('0.00'), gross_earnings - total_deductions).quantize(Decimal('0.01'))
 
+        # Determine default approver role if not specified
+        from core.models import Role
+        if current_approver_role is None:
+            current_approver_role = Role.objects.filter(role_name__icontains='Admin').first() or Role.objects.first()
+
         with transaction.atomic():
             payroll, created = Payroll.objects.update_or_create(
                 user=user,
@@ -206,6 +211,7 @@ class PayrollService:
                     'amount': net_payable,
                     'status': Payroll.STATUS_CHOICES['DRAFT'],
                     'generated_by': generated_by,
+                    'current_approver_role': current_approver_role,
                     'absent_days': absent_days,
                     'base_salary': base_salary,
                     'housing_allowance': housing_allowance,

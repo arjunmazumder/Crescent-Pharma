@@ -1,7 +1,6 @@
 from django.db import models
 from django.conf import settings
-from core.models import Lookup
-from django.contrib.auth.models import Group
+from core.models import Lookup, Role
 
 class Holiday(models.Model):
     date = models.DateField(unique=True)
@@ -95,7 +94,7 @@ class Payroll(models.Model):
         default=STATUS_CHOICES['DRAFT']
     )
     generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='generated_payrolls')
-    current_approver_role = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True)
+    current_approver_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True)
     absent_days = models.IntegerField(default=0)
     base_salary = models.DecimalField(max_digits=12, decimal_places=2)
     housing_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -123,7 +122,7 @@ class PayrollApproval(models.Model):
 
     payroll = models.ForeignKey(Payroll, on_delete=models.CASCADE, related_name='approvals')
     approver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
-    role = models.ForeignKey(Group, on_delete=models.CASCADE)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
     status = models.CharField(
         max_length=50,
         choices=[(value, value) for value in STATUS_CHOICES.values()],

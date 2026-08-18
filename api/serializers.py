@@ -119,10 +119,37 @@ class PayrollSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     employee_id = serializers.CharField(source='user.employee_id', read_only=True)
     generated_by_username = serializers.CharField(source='generated_by.username', read_only=True)
+    current_approver_role_name = serializers.CharField(source='current_approver_role.role_name', read_only=True)
 
     class Meta:
         model = Payroll
-        fields = '__all__'
+        fields = (
+            'id',
+            'user',
+            'username',
+            'employee_id',
+            'month',
+            'year',
+            'amount',
+            'status',
+            'current_approver_role',
+            'current_approver_role_name',
+            'generated_by',
+            'generated_by_username',
+            'absent_days',
+            'base_salary',
+            'housing_allowance',
+            'transport_allowance',
+            'medical_benefits',
+            'utility_allowance',
+            'per_day_salary',
+            'per_hour_salary',
+            'unpaid_deduction',
+            'total_ta_allowance',
+            'total_tour_allowance',
+            'loan_deduction',
+            'created_at',
+        )
 
 class LoanSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -177,7 +204,7 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class PayrollApprovalSerializer(serializers.ModelSerializer):
-    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_name = serializers.CharField(source='role.role_name', read_only=True)
     approver_name = serializers.CharField(source='approver.username', read_only=True)
 
     class Meta:
