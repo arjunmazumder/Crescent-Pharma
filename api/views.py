@@ -337,7 +337,23 @@ class PayrollViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='disburse')
     def disburse_payroll(self, request, pk=None):
         payroll = self.get_object()
-        
+
+        # Permission check: Only Admin / Staff / HR Manager with change_payroll permission can disburse
+        user_perms = request.user.get_effective_permissions()
+        is_authorized = request.user.is_superuser or request.user.is_staff or 'change_payroll' in user_perms or 'all' in user_perms
+        if not is_authorized:
+            return Response(
+                {'error': 'Permission denied: Only authorized HR or Accounts administrators can disburse payroll.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Self-disbursement prevention check
+        if payroll.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot disburse your own payroll.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         payroll.status = Payroll.STATUS_CHOICES['PAID']
         payroll.save()
 
@@ -352,6 +368,90 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         return Response({
             'message': f"Payroll for {payroll.user.username} marked as Paid. Loan deductions updated.",
+            'data': PayrollSerializer(payroll).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Payroll'],
+        summary='Approve Monthly Payroll',
+        description='Marks the payroll draft as APPROVED, ready for final disbursement. Requires HR/Finance Manager permissions.',
+        examples=[
+            OpenApiExample(
+                'Approve Payroll Example',
+                value={'remarks': 'Verified attendance, tour bills, and loan deductions. Approved.'},
+                request_only=True
+            )
+        ]
+    )
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve_payroll(self, request, pk=None):
+        payroll = self.get_object()
+
+        # Permission check: Only Admin / Staff / HR Manager with change_payroll permission can approve
+        user_perms = request.user.get_effective_permissions()
+        is_authorized = request.user.is_superuser or request.user.is_staff or 'change_payroll' in user_perms or 'all' in user_perms
+        if not is_authorized:
+            return Response(
+                {'error': 'Permission denied: Only managers or HR administrators with change_payroll permission can approve payroll.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Self-approval prevention check
+        if payroll.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot approve your own payroll. It must be approved by an authorized manager.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if payroll.status == Payroll.STATUS_CHOICES['PAID']:
+            return Response({'error': 'Cannot approve a payroll that is already PAID.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        payroll.status = Payroll.STATUS_CHOICES['APPROVED']
+        payroll.save()
+
+        return Response({
+            'message': f"Payroll for {payroll.user.username} approved successfully.",
+            'data': PayrollSerializer(payroll).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Payroll'],
+        summary='Reject Monthly Payroll',
+        description='Marks the payroll as REJECTED with remarks.',
+        examples=[
+            OpenApiExample(
+                'Reject Payroll Example',
+                value={'remarks': 'Discrepancy found in absent days calculation.'},
+                request_only=True
+            )
+        ]
+    )
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject_payroll(self, request, pk=None):
+        payroll = self.get_object()
+
+        # Permission check
+        user_perms = request.user.get_effective_permissions()
+        is_authorized = request.user.is_superuser or request.user.is_staff or 'change_payroll' in user_perms or 'all' in user_perms
+        if not is_authorized:
+            return Response(
+                {'error': 'Permission denied: Only managers or HR administrators can reject payroll.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if payroll.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot reject your own payroll.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        remarks = request.data.get('remarks') or request.data.get('rejectionReason', '')
+        payroll.status = Payroll.STATUS_CHOICES['REJECTED']
+        payroll.save()
+
+        return Response({
+            'message': f"Payroll for {payroll.user.username} rejected.",
+            'remarks': remarks,
             'data': PayrollSerializer(payroll).data
         }, status=status.HTTP_200_OK)
 
