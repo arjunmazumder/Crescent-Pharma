@@ -209,3 +209,48 @@ class SalesModuleTestCase(TestCase):
         delivered_orders = summary_resp.data.get('delivered_orders') or summary_resp.data.get('deliveredOrders')
         self.assertEqual(total_orders, 1)
         self.assertEqual(delivered_orders, 1)
+
+    def test_stock_reservation_lifecycle(self):
+        """Tests that stock is reserved on order creation, and released on cancel/delivery."""
+        # Initial state: 100 boxes in stock, 0 reserved, 100 available
+        self.stock_level.refresh_from_db()
+        self.assertEqual(self.stock_level.quantity, 100)
+        self.assertEqual(self.stock_level.reserved_quantity, 0)
+        self.assertEqual(self.stock_level.available_quantity, 100)
+
+        # Step 1: Create a pending order with 25 boxes
+        items_data = [
+            {
+                'product_id': self.product.id,
+                'warehouse_id': self.warehouse.id,
+                'batch_number': 'BATCH-2026-A1',
+                'quantity': 25
+            }
+        ]
+        order = OrderService.create_order(customer=self.customer, items_data=items_data, user=self.user)
+        self.stock_level.refresh_from_db()
+        # Physical quantity is still 100, but 25 is reserved, so available is 75!
+        self.assertEqual(self.stock_level.quantity, 100)
+        self.assertEqual(self.stock_level.reserved_quantity, 25)
+        self.assertEqual(self.stock_level.available_quantity, 75)
+
+        # Step 2: Cancel pending order -> Reserved stock should be released back!
+        OrderService.cancel_order(order=order, reason="Customer cancelled pending booking", user=self.user)
+        self.stock_level.refresh_from_db()
+        self.assertEqual(self.stock_level.quantity, 100)
+        self.assertEqual(self.stock_level.reserved_quantity, 0)
+        self.assertEqual(self.stock_level.available_quantity, 100)
+
+        # Step 3: Re-order 25 boxes and Deliver
+        order2 = OrderService.create_order(customer=self.customer, items_data=items_data, user=self.user)
+        self.stock_level.refresh_from_db()
+        self.assertEqual(self.stock_level.reserved_quantity, 25)
+        self.assertEqual(self.stock_level.available_quantity, 75)
+
+        OrderService.deliver_order(order=order2, user=self.user)
+        self.stock_level.refresh_from_db()
+        # Physical stock decreases to 75, reserved resets to 0, available becomes 75!
+        self.assertEqual(self.stock_level.quantity, 75)
+        self.assertEqual(self.stock_level.reserved_quantity, 0)
+        self.assertEqual(self.stock_level.available_quantity, 75)
+

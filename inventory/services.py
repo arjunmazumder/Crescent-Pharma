@@ -7,6 +7,49 @@ from .models import Product, Warehouse, StockLevel, StockMovement
 
 class InventoryService:
     @staticmethod
+    def reserve_stock(product, warehouse, batch_number, quantity):
+        """
+        Atomically reserves stock for a pending/confirmed sales order.
+        Increments reserved_quantity on the StockLevel.
+        """
+        if quantity <= 0:
+            return None
+        with transaction.atomic():
+            stock_level, _ = StockLevel.objects.select_for_update().get_or_create(
+                product=product,
+                warehouse=warehouse,
+                batch_number=batch_number,
+                defaults={'quantity': 0, 'reserved_quantity': 0}
+            )
+            if quantity > stock_level.available_quantity:
+                raise ValueError(
+                    f"Insufficient available stock for {product.name} (Batch: {batch_number}) at {warehouse.name}. "
+                    f"Requested: {quantity}, Available: {stock_level.available_quantity}."
+                )
+            stock_level.reserved_quantity += quantity
+            stock_level.save()
+            return stock_level
+
+    @staticmethod
+    def release_reserved_stock(product, warehouse, batch_number, quantity):
+        """
+        Atomically releases reserved stock (e.g. upon order cancellation).
+        Decrements reserved_quantity on the StockLevel.
+        """
+        if quantity <= 0:
+            return None
+        with transaction.atomic():
+            stock_level = StockLevel.objects.select_for_update().filter(
+                product=product,
+                warehouse=warehouse,
+                batch_number=batch_number
+            ).first()
+            if stock_level:
+                stock_level.reserved_quantity = max(0, stock_level.reserved_quantity - quantity)
+                stock_level.save()
+                return stock_level
+
+    @staticmethod
     def record_stock_movement(
         product,
         warehouse,
@@ -18,11 +61,13 @@ class InventoryService:
         rack_location=None,
         reference_no="",
         notes="",
-        user=None
+        user=None,
+        is_reserved=False
     ):
         """
         Atomically records a stock transaction (IN, OUT, ADJUSTMENT, RETURN, DAMAGE)
         and updates or creates the corresponding StockLevel for the warehouse and batch.
+        If is_reserved=True during OUT movement, also releases the reserved_quantity.
         """
         if quantity <= 0 and movement_type != 'ADJUSTMENT':
             raise ValueError("Quantity must be greater than zero.")
@@ -36,7 +81,8 @@ class InventoryService:
                     'mfg_date': mfg_date,
                     'expiry_date': expiry_date,
                     'rack_location': rack_location or '',
-                    'quantity': 0
+                    'quantity': 0,
+                    'reserved_quantity': 0
                 }
             )
 
@@ -52,12 +98,19 @@ class InventoryService:
             if movement_type in [StockMovement.MOVEMENT_TYPE_CHOICES['IN'], StockMovement.MOVEMENT_TYPE_CHOICES['RETURN'], 'IN', 'RETURN']:
                 new_stock = previous_stock + quantity
             elif movement_type in [StockMovement.MOVEMENT_TYPE_CHOICES['OUT'], StockMovement.MOVEMENT_TYPE_CHOICES['DAMAGE'], 'OUT', 'DAMAGE']:
-                if quantity > stock_level.available_quantity:
+                if not is_reserved and quantity > stock_level.available_quantity:
                     raise ValueError(
                         f"Insufficient stock for {product.name} (Batch: {batch_number}) at {warehouse.name}. "
                         f"Requested: {quantity}, Available: {stock_level.available_quantity}."
                     )
+                elif is_reserved and quantity > stock_level.quantity:
+                    raise ValueError(
+                        f"Insufficient physical stock for {product.name} (Batch: {batch_number}) at {warehouse.name}. "
+                        f"Requested: {quantity}, Total In Warehouse: {stock_level.quantity}."
+                    )
                 new_stock = previous_stock - quantity
+                if is_reserved:
+                    stock_level.reserved_quantity = max(0, stock_level.reserved_quantity - quantity)
             elif movement_type in [StockMovement.MOVEMENT_TYPE_CHOICES['ADJUSTMENT'], 'ADJUSTMENT']:
                 new_stock = quantity
                 quantity = new_stock - previous_stock

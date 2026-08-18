@@ -81,6 +81,15 @@ class OrderService:
                 if quantity <= 0:
                     raise ValueError("Item quantity must be greater than zero.")
 
+                # Atomically reserve stock if warehouse and batch are provided
+                if warehouse and batch_number:
+                    InventoryService.reserve_stock(
+                        product=product,
+                        warehouse=warehouse,
+                        batch_number=batch_number,
+                        quantity=quantity
+                    )
+
                 unit_price = Decimal(str(item_dict.get('unit_price') or item_dict.get('unitPrice') or product.selling_price))
                 vat_pct = Decimal(str(item_dict.get('vat_percentage') if item_dict.get('vat_percentage') is not None else item_dict.get('vatPercentage') if item_dict.get('vatPercentage') is not None else product.vat_percentage))
                 item_discount_pct = Decimal(str(item_dict.get('discount_percentage') or item_dict.get('discountPercentage') or 0))
@@ -121,25 +130,10 @@ class OrderService:
     @staticmethod
     def confirm_order(order, user=None):
         """
-        Marks the order as CONFIRMED after validating stock availability.
+        Marks the order as CONFIRMED.
         """
         if order.status not in [OrderStatus.DRAFT, OrderStatus.PENDING]:
             raise ValueError(f"Cannot confirm order with current status '{order.status}'.")
-
-        # Validate stock availability for each item with assigned warehouse and batch
-        for item in order.items.all():
-            if item.warehouse and item.batch_number:
-                stock = StockLevel.objects.filter(
-                    product=item.product,
-                    warehouse=item.warehouse,
-                    batch_number=item.batch_number
-                ).first()
-                available = stock.available_quantity if stock else 0
-                if available < item.quantity:
-                    raise ValueError(
-                        f"Insufficient stock for '{item.product.name}' (Batch: {item.batch_number}) at {item.warehouse.name}. "
-                        f"Available: {available}, Requested: {item.quantity}."
-                    )
 
         order.status = OrderStatus.CONFIRMED
         order.save()
@@ -148,8 +142,8 @@ class OrderService:
     @staticmethod
     def deliver_order(order, user=None):
         """
-        Marks the order as DELIVERED and atomically deducts stock
-        via InventoryService.record_stock_movement ('OUT').
+        Marks the order as DELIVERED and atomically deducts physical stock
+        and releases reservation via InventoryService.record_stock_movement ('OUT').
         """
         if order.status == OrderStatus.DELIVERED:
             raise ValueError("Order is already marked as DELIVERED.")
@@ -168,7 +162,8 @@ class OrderService:
                         quantity=item.quantity,
                         reference_no=order.order_number,
                         notes=f"Sales fulfillment for {order.customer.name} (Order: {order.order_number})",
-                        user=user
+                        user=user,
+                        is_reserved=True
                     )
 
             order.status = OrderStatus.DELIVERED
@@ -183,6 +178,7 @@ class OrderService:
         """
         Cancels the order with a mandatory reason. If previously DELIVERED,
         automatically restores deducted inventory via 'RETURN' movement.
+        If pending or confirmed, releases reserved stock.
         """
         if not reason or not str(reason).strip():
             raise ValueError("Cancellation reason is mandatory when cancelling an order.")
@@ -191,7 +187,7 @@ class OrderService:
             raise ValueError("Order is already CANCELLED.")
 
         with transaction.atomic():
-            # If the order was already fulfilled/delivered, rollback the inventory
+            # If the order was already fulfilled/delivered, rollback the physical inventory
             if order.status == OrderStatus.DELIVERED:
                 for item in order.items.all():
                     if item.warehouse:
@@ -205,6 +201,16 @@ class OrderService:
                             reference_no=order.order_number,
                             notes=f"Order Cancelled rollback: {reason}",
                             user=user
+                        )
+            else:
+                # If the order was pending / confirmed, release the reserved stock
+                for item in order.items.all():
+                    if item.warehouse and item.batch_number:
+                        InventoryService.release_reserved_stock(
+                            product=item.product,
+                            warehouse=item.warehouse,
+                            batch_number=item.batch_number,
+                            quantity=item.quantity
                         )
 
             order.status = OrderStatus.CANCELLED
