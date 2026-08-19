@@ -39,6 +39,13 @@ class Attendance(models.Model):
         'ON_LEAVE': 'On Leave',
     }
 
+    CHECK_IN_METHOD_CHOICES = {
+        'GPS': 'GPS',
+        'BIOMETRIC_FINGERPRINT': 'Biometric Fingerprint',
+        'DUAL_VERIFIED': 'Dual Verified (GPS + Fingerprint)',
+        'MANUAL': 'Manual Entry',
+    }
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='attendances')
     date = models.DateField()
     shift = models.IntegerField(default=1) # 1 Morning, 2 Evening
@@ -47,6 +54,12 @@ class Attendance(models.Model):
         choices=[(value, value) for value in STATUS_CHOICES.values()],
         default=STATUS_CHOICES['PRESENT']
     )
+    check_in_method = models.CharField(
+        max_length=50,
+        choices=[(value, value) for value in CHECK_IN_METHOD_CHOICES.values()],
+        default=CHECK_IN_METHOD_CHOICES['GPS']
+    )
+    biometric_device_id = models.CharField(max_length=100, null=True, blank=True)
     check_in_time = models.DateTimeField(null=True, blank=True)
     check_out_time = models.DateTimeField(null=True, blank=True)
     latitude = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)

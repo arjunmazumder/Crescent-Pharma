@@ -37,9 +37,10 @@ def calculate_haversine_distance(lat1, lon1, lat2, lon2):
 
 class AttendanceService:
     @staticmethod
-    def process_check_in(user, latitude=None, longitude=None, shift=1, notes=""):
+    def process_check_in(user, latitude=None, longitude=None, shift=1, notes="", check_in_method=None, biometric_device_id=None):
         """
         Validates geo-fencing (if enabled for user) and records Check-in or Check-out.
+        Supports GPS, Biometric Fingerprint, and Dual Verification methods.
         """
         now = timezone.now()
         today = now.date()
@@ -73,6 +74,11 @@ class AttendanceService:
         else:
             matched_office_name = "Remote / Unbounded"
 
+        # Determine method
+        method = check_in_method or Attendance.CHECK_IN_METHOD_CHOICES['GPS']
+        if biometric_device_id and not check_in_method:
+            method = Attendance.CHECK_IN_METHOD_CHOICES['BIOMETRIC_FINGERPRINT']
+
         # 2. Check existing attendance for today & shift
         attendance = Attendance.objects.filter(user=user, date=today, shift=shift).first()
         if attendance:
@@ -82,6 +88,8 @@ class AttendanceService:
                 attendance.check_out_location_name = matched_office_name
                 if notes:
                     attendance.notes = f"{attendance.notes or ''} | Out Note: {notes}".strip()
+                if biometric_device_id:
+                    attendance.biometric_device_id = biometric_device_id
                 attendance.save()
                 return attendance, "Check-out recorded successfully."
             else:
@@ -93,6 +101,8 @@ class AttendanceService:
                 date=today,
                 shift=shift,
                 status=Attendance.STATUS_CHOICES['PRESENT'],
+                check_in_method=method,
+                biometric_device_id=biometric_device_id,
                 check_in_time=now,
                 latitude=latitude,
                 longitude=longitude,

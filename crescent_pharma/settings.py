@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'hr',
     'inventory',
     'sales',
+    'marketing',
     'api',
 ]
 
@@ -137,6 +138,8 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Products & Categories', 'description': 'Product catalog, categories, and attributes management'},
         {'name': 'Inventory & Stock Management', 'description': 'Warehouses, stock levels, batch/expiry tracking, and stock movements'},
         {'name': 'Customers & Sales Orders', 'description': 'Customer directory, client orders, and order history'},
+        {'name': 'Marketing & Sales Targets', 'description': 'Smart sales targets allocation, auto-pricing, and target items management'},
+        {'name': 'Marketing - Reports & Analytics', 'description': 'Real-time sales achievement scorecards, shift attendance compliance, and team leaderboard'},
     ],
 }
 
