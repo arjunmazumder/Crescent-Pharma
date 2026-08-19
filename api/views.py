@@ -1338,12 +1338,12 @@ class SalesTargetViewSet(viewsets.ModelViewSet):
         return Response(achievement_data, status=status.HTTP_200_OK)
 
 
-@extend_schema(tags=['Marketing - Reports & Analytics'])
+@extend_schema(tags=['Marketing & Sales Targets'])
 class MarketingReportViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
-        tags=['Marketing - Reports & Analytics'],
+        tags=['Marketing & Sales Targets'],
         summary='Get Logged-in MPO Live Achievement Scorecard',
         description='Returns the authenticated MPO performance scorecard across assigned targets with product breakdowns and shift compliance.',
         parameters=[
@@ -1362,7 +1362,7 @@ class MarketingReportViewSet(viewsets.ViewSet):
         return Response(scorecard, status=status.HTTP_200_OK)
 
     @extend_schema(
-        tags=['Marketing - Reports & Analytics'],
+        tags=['Marketing & Sales Targets'],
         summary='Get Specific MPO Performance Scorecard (Admin / Manager)',
         description='Returns comprehensive performance metrics, target achievement, and dual-shift attendance records for a specific MPO.',
         parameters=[
@@ -1392,7 +1392,7 @@ class MarketingReportViewSet(viewsets.ViewSet):
         return Response(scorecard, status=status.HTTP_200_OK)
 
     @extend_schema(
-        tags=['Marketing - Reports & Analytics'],
+        tags=['Marketing & Sales Targets'],
         summary='Get Consolidated Marketing Team Report & Leaderboard',
         description='Returns company-wide consolidated sales target report ranking all MPOs by achievement percentage, team revenue totals, and territory metrics.',
         parameters=[
@@ -1411,6 +1411,7 @@ class MarketingReportViewSet(viewsets.ViewSet):
 
         report = TargetService.get_consolidated_team_report(start_date=start_date, end_date=end_date, period_type=period_type)
         return Response(report, status=status.HTTP_200_OK)
+
 
 
 
