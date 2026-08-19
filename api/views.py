@@ -1,8 +1,10 @@
+import datetime
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from drf_spectacular.utils import extend_schema, OpenApiExample
+from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -224,6 +226,155 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             'month': month,
             'year': year,
             'summary': counts
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Attendance'],
+        summary="Get Date-Range Attendance Summary (Filtered by User, Start Date & End Date with Pagination)",
+        description="Returns an aggregated attendance summary (Present, Late, Half Day, Absent, On Leave, Total Working Hours) and paginated attendance records for a user within a specified date range.",
+        parameters=[
+            OpenApiParameter(name='user_id', type=int, location=OpenApiParameter.QUERY, description='Target user ID (admin/staff can query any employee; defaults to logged-in user)', required=False),
+            OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Start date in YYYY-MM-DD format (defaults to 1st of current month)', required=False),
+            OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='End date in YYYY-MM-DD format (defaults to today)', required=False),
+            OpenApiParameter(name='status', type=str, location=OpenApiParameter.QUERY, description='Optional status filter (e.g. Present, Late, Absent, Half Day, On Leave)', required=False),
+            OpenApiParameter(name='page', type=int, location=OpenApiParameter.QUERY, description='Page number for paginated records list (defaults to 1)', required=False),
+            OpenApiParameter(name='page_size', type=int, location=OpenApiParameter.QUERY, description='Number of records per page (defaults to 10)', required=False),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        now = timezone.now()
+        today = now.date()
+
+        # 1. Parse & validate start_date & end_date
+        start_date_str = request.query_params.get('start_date') or request.query_params.get('startDate')
+        end_date_str = request.query_params.get('end_date') or request.query_params.get('endDate')
+
+        if start_date_str:
+            start_date = parse_date(str(start_date_str).strip())
+            if not start_date:
+                return Response({'error': 'Invalid start_date format. Please use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            start_date = datetime.date(today.year, today.month, 1)
+
+        if end_date_str:
+            end_date = parse_date(str(end_date_str).strip())
+            if not end_date:
+                return Response({'error': 'Invalid end_date format. Please use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            end_date = today
+
+        if start_date > end_date:
+            return Response({'error': 'start_date must be on or before end_date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Determine target user & enforce authorization
+        user_id_param = request.query_params.get('user_id') or request.query_params.get('userId') or request.query_params.get('user')
+
+        if user_id_param:
+            try:
+                user_id = int(user_id_param)
+            except (ValueError, TypeError):
+                return Response({'error': 'Invalid user_id parameter. Must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if request.user.id != user_id and not (request.user.is_superuser or request.user.is_staff):
+                return Response(
+                    {'error': 'Permission denied: You can only view your own attendance summary.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            target_user = User.objects.filter(id=user_id).select_related('role').first()
+            if not target_user:
+                return Response({'error': f'User with ID {user_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            target_user = request.user
+
+        # 3. Query all attendance records in date range
+        attendances_qs = Attendance.objects.filter(
+            user=target_user,
+            date__gte=start_date,
+            date__lte=end_date
+        ).select_related('user').order_by('-date', '-check_in_time')
+
+        # 4. Calculate aggregated metrics across the entire date range
+        present_count = attendances_qs.filter(status=Attendance.STATUS_CHOICES['PRESENT']).count()
+        late_count = attendances_qs.filter(status=Attendance.STATUS_CHOICES['LATE']).count()
+        half_day_count = attendances_qs.filter(status=Attendance.STATUS_CHOICES['HALF_DAY']).count()
+        absent_count = attendances_qs.filter(status=Attendance.STATUS_CHOICES['ABSENT']).count()
+        on_leave_count = attendances_qs.filter(status=Attendance.STATUS_CHOICES['ON_LEAVE']).count()
+        total_records = attendances_qs.count()
+
+        total_seconds = 0
+        for att in attendances_qs:
+            if att.check_in_time and att.check_out_time:
+                diff = (att.check_out_time - att.check_in_time).total_seconds()
+                if diff > 0:
+                    total_seconds += diff
+        total_working_hours = round(total_seconds / 3600.0, 2)
+
+        # 5. Optional status filtering on records list
+        status_filter = request.query_params.get('status')
+        records_to_paginate = attendances_qs
+        if status_filter:
+            records_to_paginate = records_to_paginate.filter(status__iexact=status_filter.strip())
+
+        # 6. Apply pagination
+        page = self.paginate_queryset(records_to_paginate)
+        if page is not None:
+            serialized_records = AttendanceSerializer(page, many=True).data
+            paginator = self.paginator
+            count = paginator.page.paginator.count
+            total_pages = paginator.page.paginator.num_pages
+            current_page = paginator.page.number
+            page_size = paginator.get_page_size(self.request)
+            next_link = paginator.get_next_link()
+            previous_link = paginator.get_previous_link()
+        else:
+            serialized_records = AttendanceSerializer(records_to_paginate, many=True).data
+            count = len(serialized_records)
+            total_pages = 1
+            current_page = 1
+            page_size = count
+            next_link = None
+            previous_link = None
+
+        pagination_data = {
+            'count': count,
+            'total_pages': total_pages,
+            'current_page': current_page,
+            'page_size': page_size,
+            'next': next_link,
+            'previous': previous_link
+        }
+
+        return Response({
+            'count': count,
+            'total_pages': total_pages,
+            'current_page': current_page,
+            'page_size': page_size,
+            'next': next_link,
+            'previous': previous_link,
+            'user': {
+                'id': target_user.id,
+                'username': target_user.username,
+                'employee_id': target_user.employee_id,
+                'email': target_user.email,
+                'role': target_user.role.role_name if target_user.role else None
+            },
+            'date_range': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'total_days': (end_date - start_date).days + 1
+            },
+            'summary': {
+                'present': present_count,
+                'late': late_count,
+                'half_day': half_day_count,
+                'absent': absent_count,
+                'on_leave': on_leave_count,
+                'total_records': total_records,
+                'total_working_hours': total_working_hours
+            },
+            'data': serialized_records
         }, status=status.HTTP_200_OK)
 
 
