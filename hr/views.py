@@ -64,6 +64,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         notes = request.data.get('notes', '')
         check_in_method = request.data.get('check_in_method') or request.data.get('checkInMethod')
         biometric_device_id = request.data.get('biometric_device_id') or request.data.get('biometricDeviceId')
+        location_name = request.data.get('location_name') or request.data.get('locationName') or request.data.get('check_in_location_name') or request.data.get('checkInLocationName')
 
         try:
             attendance, msg = AttendanceService.process_check_in(
@@ -73,7 +74,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 shift=shift,
                 notes=notes,
                 check_in_method=check_in_method,
-                biometric_device_id=biometric_device_id
+                biometric_device_id=biometric_device_id,
+                location_name=location_name
             )
             return Response({
                 'message': msg,

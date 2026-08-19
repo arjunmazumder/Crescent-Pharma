@@ -12,6 +12,10 @@ from hr.models import (
 )
 from core.models import Lookup
 
+import json
+import urllib.request
+import urllib.error
+
 User = get_user_model()
 
 
@@ -35,22 +39,74 @@ def calculate_haversine_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
+def reverse_geocode_coordinates(latitude, longitude):
+    """
+    Reverse geocodes GPS coordinates into a human-readable real-world address/place name.
+    Uses OpenStreetMap Nominatim with graceful timeout and fallback.
+    """
+    if latitude is None or longitude is None:
+        return None
+
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+        url = f"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        req = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': 'CrescentPharmaERP/1.0 (admin@crescentpharma.com)'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as response:
+            if response.status == 200:
+                payload = json.loads(response.read().decode('utf-8'))
+                address = payload.get('address', {})
+
+                road = address.get('road') or address.get('street')
+                suburb = address.get('suburb') or address.get('neighbourhood') or address.get('residential') or address.get('quarter')
+                city = address.get('city') or address.get('town') or address.get('county') or address.get('state_district') or address.get('state')
+
+                parts = []
+                if road:
+                    parts.append(road)
+                if suburb and suburb not in parts:
+                    parts.append(suburb)
+                if city and city not in parts:
+                    parts.append(city)
+
+                if parts:
+                    return ", ".join(parts[:3])
+
+                display_name = payload.get('display_name')
+                if display_name:
+                    display_parts = [p.strip() for p in display_name.split(',') if p.strip()]
+                    return ", ".join(display_parts[:3])
+    except Exception:
+        pass
+
+    try:
+        return f"Field ({float(latitude):.4f}, {float(longitude):.4f})"
+    except Exception:
+        return "Field Location"
+
+
 class AttendanceService:
     @staticmethod
-    def process_check_in(user, latitude=None, longitude=None, shift=1, notes="", check_in_method=None, biometric_device_id=None):
+    def process_check_in(user, latitude=None, longitude=None, shift=1, notes="", check_in_method=None, biometric_device_id=None, location_name=None):
         """
         Validates geo-fencing (if enabled for user) and records Check-in or Check-out.
-        Supports GPS, Biometric Fingerprint, and Dual Verification methods.
+        Supports GPS, Biometric Fingerprint, Dual Verification, and Reverse-Geocoded real location names.
         """
         now = timezone.now()
         today = now.date()
+
+        active_locations = OfficeLocation.objects.filter(is_active=True)
 
         # 1. Geo-fencing validation if enabled on user profile
         if user.location_bounded_attendance:
             if latitude is None or longitude is None:
                 raise ValueError("Location coordinates (latitude and longitude) are required for attendance.")
             
-            active_locations = OfficeLocation.objects.filter(is_active=True)
             if not active_locations.exists():
                 raise ValueError("No active office locations configured. Please contact HR.")
             
@@ -72,7 +128,24 @@ class AttendanceService:
                     f"Geo-fencing failed: You are {nearest_distance:.1f} meters away from the nearest office boundary."
                 )
         else:
-            matched_office_name = "Remote / Unbounded"
+            # For remote / field staff:
+            if location_name:
+                matched_office_name = location_name
+            elif latitude is not None and longitude is not None:
+                # Check if coords happen to be inside a known office
+                is_near_office = False
+                for office in active_locations:
+                    dist = calculate_haversine_distance(latitude, longitude, office.latitude, office.longitude)
+                    if dist <= office.radius_meters:
+                        matched_office_name = f"{office.name} (Field Staff)"
+                        is_near_office = True
+                        break
+
+                # If not inside a known office, reverse geocode to get actual place/area name
+                if not is_near_office:
+                    matched_office_name = reverse_geocode_coordinates(latitude, longitude)
+            else:
+                matched_office_name = "Remote / Field"
 
         # Determine method
         method = check_in_method or Attendance.CHECK_IN_METHOD_CHOICES['GPS']
@@ -86,6 +159,9 @@ class AttendanceService:
             if not attendance.check_out_time:
                 attendance.check_out_time = now
                 attendance.check_out_location_name = matched_office_name
+                if latitude is not None and longitude is not None:
+                    attendance.latitude = latitude
+                    attendance.longitude = longitude
                 if notes:
                     attendance.notes = f"{attendance.notes or ''} | Out Note: {notes}".strip()
                 if biometric_device_id:

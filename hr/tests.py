@@ -273,3 +273,42 @@ class AttendanceSummaryAPITestCase(TestCase):
         self.assertEqual(summary.get('present'), 1)
         self.assertEqual(summary.get('late'), 1)
         self.assertEqual(summary.get('absent'), 1)
+
+    def test_remote_employee_check_in_with_custom_location(self):
+        """Tests that remote employee can provide explicit location_name or fallback gracefully."""
+        self.employee1.location_bounded_attendance = False
+        self.employee1.save()
+        self.client.force_authenticate(user=self.employee1)
+
+        # Shift 1: with explicit location_name
+        resp = self.client.post('/api/attendance/check-in/', {
+            'shift': 1,
+            'latitude': 23.7465,
+            'longitude': 90.3760,
+            'location_name': 'Lazz Pharma Dhanmondi Branch',
+            'notes': 'Field clinic visit'
+        }, format='json')
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        loc_name = resp.data['data'].get('check_in_location_name') or resp.data['data'].get('checkInLocationName')
+        self.assertEqual(loc_name, 'Lazz Pharma Dhanmondi Branch')
+
+    def test_remote_employee_check_in_with_gps_geocoding(self):
+        """Tests that remote employee check-in with GPS resolves real location name instead of Remote / Unbounded."""
+        self.employee1.location_bounded_attendance = False
+        self.employee1.save()
+        self.client.force_authenticate(user=self.employee1)
+
+        # Shift 2: with GPS coords (Banani / Dhaka coordinates)
+        resp = self.client.post('/api/attendance/check-in/', {
+            'shift': 2,
+            'latitude': 23.792308,
+            'longitude': 90.405696,
+            'notes': 'Field visit evening'
+        }, format='json')
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        loc_name = resp.data['data'].get('check_in_location_name') or resp.data['data'].get('checkInLocationName')
+        self.assertIsNotNone(loc_name)
+        self.assertNotEqual(loc_name, 'Remote / Unbounded')
+
