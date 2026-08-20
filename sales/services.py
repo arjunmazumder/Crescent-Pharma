@@ -171,6 +171,13 @@ class OrderService:
                 order.delivery_date = timezone.now().date()
             order.save()
 
+            # Auto-post to Accounting General Ledger
+            try:
+                from accounting.services import AccountingIntegrationService
+                AccountingIntegrationService.post_sales_order_delivery(order=order, user=user)
+            except Exception:
+                pass
+
             return order
 
     @staticmethod

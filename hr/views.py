@@ -392,6 +392,13 @@ class PayrollViewSet(viewsets.ModelViewSet):
                     loan.status = Loan.STATUS_CHOICES['CLOSED']
                 loan.save()
 
+        # Auto-post to Accounting General Ledger
+        try:
+            from accounting.services import AccountingIntegrationService
+            AccountingIntegrationService.post_payroll_disbursement(payroll=payroll, user=request.user)
+        except Exception:
+            pass
+
         return Response({
             'message': f"Payroll for {payroll.user.username} marked as Paid.",
             'data': PayrollSerializer(payroll).data

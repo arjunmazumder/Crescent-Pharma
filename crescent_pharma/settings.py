@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'inventory',
     'sales',
     'marketing',
+    'accounting',
     'api',
 ]
 
@@ -139,6 +140,12 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Inventory & Stock Management', 'description': 'Warehouses, stock levels, batch/expiry tracking, and stock movements'},
         {'name': 'Customers & Sales Orders', 'description': 'Customer directory, client orders, and order history'},
         {'name': 'Marketing & Sales Targets', 'description': 'Smart sales targets allocation, auto-pricing, real-time achievement scorecards, and team analytics'},
+        {'name': 'Accounting / Chart of Accounts', 'description': '5-tier Chart of Accounts (COA) and hierarchical GL tree'},
+        {'name': 'Accounting / Fiscal Calendar', 'description': 'Fiscal Years, Accounting Periods, and anti-tampering period locking'},
+        {'name': 'Accounting / Vouchers', 'description': 'Double-entry Journal, Contra, Payment, Receipt, and Sales/Payroll vouchers with reversal workflows'},
+        {'name': 'Accounting / Payments & Collections', 'description': 'Customer money receipts, vendor disbursements, and invoice payment reconciliation'},
+        {'name': 'Accounting / Bank Reconciliation', 'description': 'Bank Statement matching, unpresented cheques, and BRS audit generation'},
+        {'name': 'Accounting / Financial Reports', 'description': 'Real-time General Ledger, Cash/Bank Book, Trial Balance, P&L, Balance Sheet, and VAT reports'},
     ],
 }
 

@@ -7,4 +7,5 @@ urlpatterns = [
     path('', include('inventory.urls')),
     path('', include('sales.urls')),
     path('', include('marketing.urls')),
+    path('', include('accounting.urls')),
 ]
