@@ -1,6 +1,7 @@
 import datetime
+from decimal import Decimal
 from django.db import transaction
-from django.db.models import Sum, F
+from django.db.models import Sum, F, Q
 from django.utils import timezone
 from .models import Product, Warehouse, StockLevel, StockMovement
 
@@ -184,3 +185,145 @@ class InventoryService:
             expiry_date__isnull=False,
             expiry_date__lte=cutoff_date
         ).select_related('product', 'warehouse').order_by('expiry_date')
+
+    @staticmethod
+    def get_damage_and_loss_report(product_id=None, warehouse_id=None, start_date=None, end_date=None, incident_type=None):
+        """
+        Returns damaged and lost product records:
+        1. Physical damages / write-offs (movement_type='DAMAGE')
+        2. Audit shrinkage losses (movement_type='ADJUSTMENT' where new_stock < previous_stock or quantity < 0)
+        with financial loss valuation, summaries, and breakdowns.
+        """
+        # Base query matching damage or negative adjustment
+        damage_q = (
+            Q(movement_type='DAMAGE') |
+            Q(movement_type=StockMovement.MOVEMENT_TYPE_CHOICES['DAMAGE']) |
+            Q(movement_type__icontains='damage') |
+            Q(movement_type__icontains='expired')
+        )
+        shrinkage_q = (
+            (
+                Q(movement_type='ADJUSTMENT') |
+                Q(movement_type=StockMovement.MOVEMENT_TYPE_CHOICES['ADJUSTMENT']) |
+                Q(movement_type__icontains='adjustment')
+            ) & (
+                Q(quantity__lt=0) |
+                Q(new_stock__lt=F('previous_stock'))
+            )
+        )
+
+        if incident_type == 'DAMAGE':
+            combined_q = damage_q
+        elif incident_type == 'SHRINKAGE':
+            combined_q = shrinkage_q
+        else:
+            combined_q = damage_q | shrinkage_q
+
+        qs = StockMovement.objects.filter(combined_q).select_related('product', 'warehouse', 'created_by').order_by('-created_at')
+
+        if product_id:
+            qs = qs.filter(product_id=product_id)
+        if warehouse_id:
+            qs = qs.filter(warehouse_id=warehouse_id)
+        if start_date:
+            qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__date__lte=end_date)
+
+        total_damage_qty = 0
+        total_shrinkage_qty = 0
+        total_damage_loss = Decimal('0.00')
+        total_shrinkage_loss = Decimal('0.00')
+
+        damage_items = []
+        warehouse_loss_map = {}
+
+        for mov in qs:
+            # Determine incident type
+            is_damage = 'damage' in mov.movement_type.lower() or 'expired' in mov.movement_type.lower()
+            inc_type = 'DAMAGE_WRITE_OFF' if is_damage else 'AUDIT_SHRINKAGE_LOSS'
+
+            # Calculate units lost (always positive integer)
+            if is_damage:
+                lost_qty = abs(mov.quantity)
+            else:
+                if mov.previous_stock > mov.new_stock:
+                    lost_qty = mov.previous_stock - mov.new_stock
+                else:
+                    lost_qty = abs(mov.quantity)
+
+            cost_price = mov.product.purchase_price or mov.product.selling_price or Decimal('0.00')
+            incident_loss = (Decimal(str(lost_qty)) * Decimal(str(cost_price))).quantize(Decimal('0.01'))
+
+            if is_damage:
+                total_damage_qty += lost_qty
+                total_damage_loss += incident_loss
+            else:
+                total_shrinkage_qty += lost_qty
+                total_shrinkage_loss += incident_loss
+
+            wh_name = mov.warehouse.name if mov.warehouse else 'Unknown'
+            if wh_name not in warehouse_loss_map:
+                warehouse_loss_map[wh_name] = {
+                    'warehouseId': mov.warehouse_id,
+                    'warehouseName': wh_name,
+                    'damagedQuantity': 0,
+                    'shrinkageQuantity': 0,
+                    'totalLostQuantity': 0,
+                    'totalLossValue': Decimal('0.00')
+                }
+            if is_damage:
+                warehouse_loss_map[wh_name]['damagedQuantity'] += lost_qty
+            else:
+                warehouse_loss_map[wh_name]['shrinkageQuantity'] += lost_qty
+            warehouse_loss_map[wh_name]['totalLostQuantity'] += lost_qty
+            warehouse_loss_map[wh_name]['totalLossValue'] += incident_loss
+
+            damage_items.append({
+                'id': mov.id,
+                'incidentType': inc_type,
+                'movementType': mov.movement_type,
+                'productId': mov.product.id,
+                'productName': mov.product.name,
+                'genericName': mov.product.generic_name,
+                'uniqueId': mov.product.unique_id,
+                'unit': mov.product.unit,
+                'warehouseId': mov.warehouse.id,
+                'warehouseName': mov.warehouse.name,
+                'batchNumber': mov.batch_number,
+                'previousStock': mov.previous_stock,
+                'newStock': mov.new_stock,
+                'lostQuantity': lost_qty,
+                'unitCostPrice': str(cost_price),
+                'estimatedFinancialLoss': str(incident_loss),
+                'referenceNo': mov.reference_no,
+                'reasonNotes': mov.notes or ("Physical damage write-off" if is_damage else f"Audit physical count shrinkage (Prev: {mov.previous_stock}, Audited: {mov.new_stock})"),
+                'reportedBy': mov.created_by.username if mov.created_by else None,
+                'reportedAt': mov.created_at.isoformat()
+            })
+
+        warehouse_breakdown = [
+            {
+                'warehouseId': v['warehouseId'],
+                'warehouseName': v['warehouseName'],
+                'damagedQuantity': v['damagedQuantity'],
+                'shrinkageQuantity': v['shrinkageQuantity'],
+                'totalLostQuantity': v['totalLostQuantity'],
+                'totalLossValue': str(v['totalLossValue'].quantize(Decimal('0.01')))
+            }
+            for v in warehouse_loss_map.values()
+        ]
+
+        total_loss = (total_damage_loss + total_shrinkage_loss).quantize(Decimal('0.01'))
+
+        return {
+            'totalDamageAndLossIncidents': len(damage_items),
+            'totalDamagedQuantity': total_damage_qty,
+            'totalShrinkageQuantity': total_shrinkage_qty,
+            'totalLostQuantity': total_damage_qty + total_shrinkage_qty,
+            'totalDamageLossValue': str(total_damage_loss.quantize(Decimal('0.01'))),
+            'totalShrinkageLossValue': str(total_shrinkage_loss.quantize(Decimal('0.01'))),
+            'totalEstimatedFinancialLoss': str(total_loss),
+            'warehouseBreakdown': warehouse_breakdown,
+            'damages': damage_items
+        }

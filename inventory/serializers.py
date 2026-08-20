@@ -148,10 +148,25 @@ class ProductSerializer(serializers.ModelSerializer):
     def to_internal_value(self, data):
         if isinstance(data, dict):
             data = data.copy()
-            if 'category' in data and not isinstance(data['category'], dict):
-                data['category_id'] = data['category']
-            elif 'categoryId' in data and not isinstance(data['categoryId'], dict):
-                data['category_id'] = data['categoryId']
+            mapping = {
+                'categoryId': 'category_id',
+                'category': 'category_id',
+                'genericName': 'generic_name',
+                'purchasePrice': 'purchase_price',
+                'sellingPrice': 'selling_price',
+                'vatPercentage': 'vat_percentage',
+                'minStockLevel': 'min_stock_level',
+                'maxStockLevel': 'max_stock_level',
+                'drugRegistrationNumber': 'drug_registration_number',
+                'requiresPrescription': 'requires_prescription',
+                'storageCondition': 'storage_condition',
+                'imageUrl': 'image_url',
+                'isActive': 'is_active',
+                'attributeValueIds': 'attribute_value_ids',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
         return super().to_internal_value(data)
 
     def get_total_stock(self, obj):
@@ -246,28 +261,64 @@ class StockMovementSerializer(serializers.ModelSerializer):
 
 
 class StockMovementCreateSerializer(serializers.Serializer):
-    product_id = serializers.IntegerField()
-    warehouse_id = serializers.IntegerField()
-    batch_number = serializers.CharField(max_length=100)
-    movement_type = serializers.ChoiceField(choices=[
-        ('IN', 'Inflow (Purchase / Production)'),
-        ('OUT', 'Outflow (Sales / Transfer)'),
-        ('ADJUSTMENT', 'Stock Adjustment'),
-        ('RETURN', 'Customer / Vendor Return'),
-        ('DAMAGE', 'Damaged / Expired Write-off')
-    ])
-    quantity = serializers.IntegerField()
-    mfg_date = serializers.DateField(required=False, allow_null=True)
-    expiry_date = serializers.DateField(required=False, allow_null=True)
-    rack_location = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    reference_no = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
+    product_id = serializers.IntegerField(help_text='Product ID (e.g. 4)')
+    warehouse_id = serializers.IntegerField(help_text='Warehouse ID (e.g. 2)')
+    batch_number = serializers.CharField(max_length=100, help_text='Batch Number (e.g. BATCH-2026-A1)')
+    movement_type = serializers.ChoiceField(
+        choices=[
+            ('IN', 'Inflow (Purchase / Production)'),
+            ('OUT', 'Outflow (Sales / Transfer)'),
+            ('ADJUSTMENT', 'Stock Adjustment'),
+            ('RETURN', 'Customer / Vendor Return'),
+            ('DAMAGE', 'Damaged / Expired Write-off')
+        ],
+        help_text='Type of movement (IN, OUT, ADJUSTMENT, RETURN, DAMAGE)'
+    )
+    quantity = serializers.IntegerField(min_value=1, help_text='Quantity moved (positive integer)')
+    mfg_date = serializers.DateField(required=False, allow_null=True, help_text='Manufacturing Date (YYYY-MM-DD)')
+    expiry_date = serializers.DateField(required=False, allow_null=True, help_text='Expiry Date (YYYY-MM-DD)')
+    rack_location = serializers.CharField(max_length=100, required=False, allow_blank=True, help_text='Warehouse Rack / Bin location')
+    reference_no = serializers.CharField(max_length=100, required=False, allow_blank=True, help_text='Invoice / GRN / Challan Number')
+    notes = serializers.CharField(required=False, allow_blank=True, help_text='Optional remarks')
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'productId': 'product_id',
+                'warehouseId': 'warehouse_id',
+                'batchNumber': 'batch_number',
+                'movementType': 'movement_type',
+                'mfgDate': 'mfg_date',
+                'expiryDate': 'expiry_date',
+                'rackLocation': 'rack_location',
+                'referenceNo': 'reference_no'
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
 
 
 class StockAdjustmentSerializer(serializers.Serializer):
-    product_id = serializers.IntegerField()
-    warehouse_id = serializers.IntegerField()
-    batch_number = serializers.CharField(max_length=100)
-    new_quantity = serializers.IntegerField(min_value=0)
-    reference_no = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
+    product_id = serializers.IntegerField(help_text='Product ID')
+    warehouse_id = serializers.IntegerField(help_text='Warehouse ID')
+    batch_number = serializers.CharField(max_length=100, help_text='Batch Number')
+    new_quantity = serializers.IntegerField(min_value=0, help_text='New physical count')
+    reference_no = serializers.CharField(max_length=100, required=False, allow_blank=True, help_text='Audit sheet number')
+    notes = serializers.CharField(required=False, allow_blank=True, help_text='Reason for audit adjustment')
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'productId': 'product_id',
+                'warehouseId': 'warehouse_id',
+                'batchNumber': 'batch_number',
+                'newQuantity': 'new_quantity',
+                'referenceNo': 'reference_no'
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)

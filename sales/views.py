@@ -58,7 +58,10 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['Customers & Sales Orders'],
-        summary='Create Customer Order'
+        summary='Create Customer Order (with multi-item products & automated billing)',
+        description='Creates a customer sales order with multi-item products, automatic VAT & discount math, and compliance checks.',
+        request=CustomerOrderCreateSerializer,
+        responses={201: CustomerOrderSerializer}
     )
     def create(self, request, *args, **kwargs):
         serializer = CustomerOrderCreateSerializer(data=request.data)
@@ -88,7 +91,10 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['Customers & Sales Orders'],
-        summary='Confirm Customer Order'
+        summary='Confirm Customer Order',
+        description='Transitions order status from PENDING to CONFIRMED and reserves warehouse inventory stock.',
+        request=None,
+        responses={200: CustomerOrderSerializer}
     )
     @action(detail=True, methods=['post'], url_path='confirm')
     def confirm(self, request, pk=None):
@@ -104,7 +110,10 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['Customers & Sales Orders'],
-        summary='Deliver Customer Order'
+        summary='Deliver Customer Order',
+        description='Marks order as DELIVERED, reduces physical stock from warehouse batches, and triggers sales commission.',
+        request=None,
+        responses={200: CustomerOrderSerializer}
     )
     @action(detail=True, methods=['post'], url_path='deliver')
     def deliver(self, request, pk=None):
@@ -120,7 +129,10 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['Customers & Sales Orders'],
-        summary='Cancel Customer Order'
+        summary='Cancel Customer Order',
+        description='Cancels the order, releases any reserved stock back to warehouse, and records cancellation reason.',
+        request=OrderCancelSerializer,
+        responses={200: CustomerOrderSerializer}
     )
     @action(detail=True, methods=['post'], url_path='cancel')
     def cancel(self, request, pk=None):

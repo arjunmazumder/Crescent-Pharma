@@ -280,7 +280,15 @@ class PayrollViewSet(viewsets.ModelViewSet):
     @extend_schema(
         tags=['HR - Payroll'],
         summary='Auto-Generate Monthly Payroll for Employee',
-        description='Automatically calculates complete salary breakdown for an employee based on working days, absent deductions, loans, and tour allowances.'
+        description='Automatically calculates complete salary breakdown for an employee based on working days, absent deductions, loans, and tour allowances.',
+        examples=[
+            OpenApiExample(
+                'Generate Single Payroll Example',
+                value={'userId': 9, 'month': 8, 'year': 2026, 'approverRoleId': 1},
+                request_only=True
+            )
+        ],
+        responses={200: PayrollSerializer}
     )
     @action(detail=False, methods=['post'], url_path='generate')
     def generate_payroll(self, request):
@@ -314,7 +322,15 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['HR - Payroll'],
-        summary='Auto-Generate Payroll for All Active Employees'
+        summary='Auto-Generate Payroll for All Active Employees',
+        description='Calculates monthly payroll for all active employees with active salary structures.',
+        examples=[
+            OpenApiExample(
+                'Generate All Payroll Example',
+                value={'month': 8, 'year': 2026, 'approverRoleId': 1},
+                request_only=True
+            )
+        ]
     )
     @action(detail=False, methods=['post'], url_path='generate-all')
     def generate_all_payrolls(self, request):
@@ -347,7 +363,13 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'errors': errors
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['HR - Payroll'], summary='Disburse / Pay Payroll')
+    @extend_schema(
+        tags=['HR - Payroll'],
+        summary='Disburse / Pay Payroll',
+        description='Marks payroll as PAID and settles pending employee loans.',
+        request=None,
+        responses={200: PayrollSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='disburse')
     def disburse_payroll(self, request, pk=None):
         payroll = self.get_object()

@@ -1090,8 +1090,17 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 notes=data.get('notes', ''),
                 user=request.user
             )
+            variance = movement.new_stock - movement.previous_stock
+            unit_cost = product.purchase_price or product.selling_price or Decimal('0.00')
+            shrinkage_loss = (Decimal(str(abs(variance))) * Decimal(str(unit_cost))).quantize(Decimal('0.01')) if variance < 0 else Decimal('0.00')
+
             return Response({
-                'message': f"Stock adjusted successfully for {product.name} to {data['new_quantity']}.",
+                'message': f"Stock adjusted successfully for {product.name} from {movement.previous_stock} to {data['new_quantity']}.",
+                'previousStock': movement.previous_stock,
+                'newStock': movement.new_stock,
+                'variance': variance,
+                'varianceStatus': 'SHRINKAGE_LOSS' if variance < 0 else ('SURPLUS_GAIN' if variance > 0 else 'EXACT_MATCH'),
+                'estimatedFinancialLoss': str(shrinkage_loss) if variance < 0 else '0.00',
                 'movement': StockMovementSerializer(movement).data,
                 'currentStock': StockLevelSerializer(stock_level).data
             }, status=status.HTTP_200_OK)
@@ -1101,6 +1110,40 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'Warehouse not found.'}, status=status.HTTP_404_NOT_FOUND)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        tags=['Inventory & Stock Management'],
+        summary='Get Damaged & Lost Products and Financial Loss Report',
+        description='Returns comprehensive report of damaged write-offs and audit shrinkage discrepancies with monetary loss valuation in BDT and warehouse breakdowns.',
+        parameters=[
+            OpenApiParameter(name='product_id', type=int, location=OpenApiParameter.QUERY, description='Filter by Product ID', required=False),
+            OpenApiParameter(name='warehouse_id', type=int, location=OpenApiParameter.QUERY, description='Filter by Warehouse ID', required=False),
+            OpenApiParameter(name='incident_type', type=str, location=OpenApiParameter.QUERY, description='Filter by Incident Type (ALL, DAMAGE, SHRINKAGE)', required=False),
+            OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Start date (YYYY-MM-DD)', required=False),
+            OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='End date (YYYY-MM-DD)', required=False),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='damages')
+    def damages(self, request):
+        product_id_param = request.query_params.get('product_id') or request.query_params.get('productId')
+        warehouse_id_param = request.query_params.get('warehouse_id') or request.query_params.get('warehouseId')
+        incident_type = (request.query_params.get('incident_type') or request.query_params.get('incidentType') or '').strip().upper() or None
+        start_date_str = request.query_params.get('start_date') or request.query_params.get('startDate')
+        end_date_str = request.query_params.get('end_date') or request.query_params.get('endDate')
+
+        product_id = int(product_id_param) if product_id_param and str(product_id_param).isdigit() else None
+        warehouse_id = int(warehouse_id_param) if warehouse_id_param and str(warehouse_id_param).isdigit() else None
+        start_date = parse_date(str(start_date_str).strip()) if start_date_str else None
+        end_date = parse_date(str(end_date_str).strip()) if end_date_str else None
+
+        report = InventoryService.get_damage_and_loss_report(
+            product_id=product_id,
+            warehouse_id=warehouse_id,
+            start_date=start_date,
+            end_date=end_date,
+            incident_type=incident_type
+        )
+        return Response(report, status=status.HTTP_200_OK)
 
 
 # =======================================================

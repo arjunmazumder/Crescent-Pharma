@@ -40,7 +40,29 @@ class UserSerializer(serializers.ModelSerializer):
             'password': {'write_only': True, 'required': False},
             'employee_id': {'required': False, 'allow_blank': True, 'allow_null': True}
         }
-    
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'employeeId': 'employee_id',
+                'dateOfBirth': 'date_of_birth',
+                'joiningDate': 'joining_date',
+                'nidNumber': 'nid_number',
+                'morningShiftStart': 'morning_shift_start',
+                'morningShiftEnd': 'morning_shift_end',
+                'eveningShiftStart': 'evening_shift_start',
+                'eveningShiftEnd': 'evening_shift_end',
+                'locationBoundedAttendance': 'location_bounded_attendance',
+                'isSuperuser': 'is_superuser',
+                'isStaff': 'is_staff',
+                'userPermissions': 'user_permissions',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
     def get_effective_permissions(self, obj):
         return obj.get_effective_permissions()
     

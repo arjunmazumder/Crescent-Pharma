@@ -132,6 +132,20 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'user': {'required': False}
         }
 
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'leaveType': 'leave_type',
+                'startDate': 'start_date',
+                'endDate': 'end_date',
+                'userId': 'user',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
     def validate(self, attrs):
         start_date = attrs.get('start_date') or (self.instance.start_date if self.instance else None)
         end_date = attrs.get('end_date') or (self.instance.end_date if self.instance else None)
