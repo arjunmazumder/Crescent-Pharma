@@ -8,6 +8,10 @@ from .models import (
 )
 
 
+# =====================================================================
+# Chart of Accounts (COA) Serializers
+# =====================================================================
+
 class AccountHeadSerializer(serializers.ModelSerializer):
     parent_code = serializers.CharField(source='parent.code', read_only=True)
     parent_name = serializers.CharField(source='parent.name', read_only=True)
@@ -19,9 +23,11 @@ class AccountHeadSerializer(serializers.ModelSerializer):
             'parent', 'parent_code', 'parent_name',
             'is_group', 'currency', 'is_reconciliation',
             'bank_account_no', 'bank_branch', 'routing_number',
-            'is_system_locked', 'is_active', 'created_at', 'updated_at'
+            'is_system_locked', 'is_active', 'created_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'parent_code', 'parent_name', 'is_system_locked', 'created_at'
+        ]
 
 
 class AccountHeadTreeSerializer(serializers.ModelSerializer):
@@ -39,6 +45,10 @@ class AccountHeadTreeSerializer(serializers.ModelSerializer):
         return AccountHeadTreeSerializer(children, many=True).data
 
 
+# =====================================================================
+# Fiscal Calendar Serializers
+# =====================================================================
+
 class AccountingPeriodSerializer(serializers.ModelSerializer):
     fiscal_year_code = serializers.CharField(source='fiscal_year.code', read_only=True)
 
@@ -47,9 +57,11 @@ class AccountingPeriodSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'fiscal_year', 'fiscal_year_code', 'name', 'period_number',
             'start_date', 'end_date', 'is_current', 'is_locked', 'is_closed',
-            'locked_by', 'locked_at', 'created_at'
+            'created_at'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = [
+            'id', 'fiscal_year_code', 'is_locked', 'is_closed', 'created_at'
+        ]
 
 
 class FiscalYearSerializer(serializers.ModelSerializer):
@@ -60,11 +72,16 @@ class FiscalYearSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'code', 'start_date', 'end_date',
             'is_current', 'is_locked', 'is_closed',
-            'retained_earnings_account', 'locked_by', 'locked_at',
-            'closed_by', 'closed_at', 'notes', 'periods', 'created_at'
+            'retained_earnings_account', 'notes', 'periods', 'created_at'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = [
+            'id', 'is_locked', 'is_closed', 'periods', 'created_at'
+        ]
 
+
+# =====================================================================
+# Voucher & Journal Entry Serializers
+# =====================================================================
 
 class JournalEntrySerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source='account.code', read_only=True)
@@ -75,28 +92,21 @@ class JournalEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = JournalEntry
         fields = [
-            'id', 'voucher', 'line_no', 'account', 'account_code', 'account_name', 'account_type',
+            'id', 'line_no', 'account', 'account_code', 'account_name', 'account_type',
             'debit_amount', 'credit_amount', 'description',
             'party_type', 'party_id',
-            'foreign_currency', 'foreign_amount', 'exchange_rate',
-            'tax_rate', 'tax_amount', 'cost_center', 'product', 'product_name',
-            'is_reconciled', 'reconciled_at', 'created_at'
+            'cost_center', 'product', 'product_name'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'account_code', 'account_name', 'account_type', 'product_name']
 
 
 class JournalEntryCreateSerializer(serializers.Serializer):
-    account_id = serializers.IntegerField()
+    account_id = serializers.IntegerField(help_text="Target transactional AccountHead ID")
     debit_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=Decimal('0.00'))
     credit_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=Decimal('0.00'))
     description = serializers.CharField(required=False, allow_blank=True, default='')
     party_type = serializers.ChoiceField(choices=PartyType.choices, required=False, allow_null=True)
     party_id = serializers.IntegerField(required=False, allow_null=True)
-    foreign_currency = serializers.CharField(required=False, allow_blank=True, default='')
-    foreign_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
-    exchange_rate = serializers.DecimalField(max_digits=10, decimal_places=4, required=False, allow_null=True)
-    tax_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
-    tax_amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
     cost_center = serializers.CharField(required=False, allow_blank=True, default='')
     product_id = serializers.IntegerField(required=False, allow_null=True)
 
@@ -111,33 +121,40 @@ class VoucherSerializer(serializers.ModelSerializer):
         model = Voucher
         fields = [
             'id', 'voucher_number', 'voucher_type', 'voucher_date',
-            'period', 'period_name', 'reference_no', 'narration',
+            'period_name', 'reference_no', 'narration',
             'status', 'total_debit', 'total_credit',
-            'attachment_url', 'is_auto_generated', 'source_module', 'source_id',
+            'attachment_url', 'is_auto_generated', 'source_module',
             'cheque_number', 'cheque_date', 'cheque_status',
-            'reversal_of', 'is_reversed', 'rejected_by', 'rejection_reason',
-            'created_by', 'created_by_username', 'posted_by', 'posted_by_username', 'posted_at',
-            'entries', 'created_at', 'updated_at'
+            'is_reversed', 'created_by_username', 'posted_by_username',
+            'entries', 'created_at'
         ]
-        read_only_fields = ['id', 'voucher_number', 'total_debit', 'total_credit', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'voucher_number', 'period_name', 'status',
+            'total_debit', 'total_credit', 'is_auto_generated', 'source_module',
+            'is_reversed', 'created_by_username', 'posted_by_username', 'created_at'
+        ]
 
 
 class VoucherCreateSerializer(serializers.Serializer):
     voucher_type = serializers.ChoiceField(choices=VoucherType.choices, default=VoucherType.JOURNAL)
     voucher_date = serializers.DateField()
     narration = serializers.CharField()
-    reference_no = serializers.CharField(required=False, allow_blank=True, default='')
+    reference_no = serializers.CharField(required=False, allow_blank=True, default='', help_text="Bill No, TrxID, or Reference")
     attachment_url = serializers.URLField(required=False, allow_blank=True, default='')
     cheque_number = serializers.CharField(required=False, allow_blank=True, default='')
     cheque_date = serializers.DateField(required=False, allow_null=True)
     cheque_status = serializers.CharField(required=False, allow_blank=True, default='')
-    auto_post = serializers.BooleanField(default=True)
-    entries = JournalEntryCreateSerializer(many=True)
+    auto_post = serializers.BooleanField(default=True, help_text="Immediately post to General Ledger if balanced")
+    entries = JournalEntryCreateSerializer(many=True, help_text="Balanced debit and credit line items")
 
 
 class VoucherReverseSerializer(serializers.Serializer):
-    reason = serializers.CharField(required=True)
+    reason = serializers.CharField(required=True, help_text="Reason for reversing the posted voucher")
 
+
+# =====================================================================
+# Payment & Collection Serializers
+# =====================================================================
 
 class PaymentRecordSerializer(serializers.ModelSerializer):
     deposit_account_name = serializers.CharField(source='deposit_to_account.name', read_only=True)
@@ -151,24 +168,30 @@ class PaymentRecordSerializer(serializers.ModelSerializer):
             'id', 'receipt_no', 'payment_type', 'party_type', 'party_id',
             'order', 'order_number', 'payment_date', 'amount',
             'payment_method', 'deposit_to_account', 'deposit_account_name', 'deposit_account_code',
-            'voucher', 'voucher_number', 'reference_no', 'notes',
-            'created_by', 'created_at'
+            'voucher_number', 'reference_no', 'notes', 'created_at'
         ]
-        read_only_fields = ['id', 'receipt_no', 'voucher', 'created_at']
+        read_only_fields = [
+            'id', 'receipt_no', 'order_number', 'deposit_account_name',
+            'deposit_account_code', 'voucher_number', 'created_at'
+        ]
 
 
 class PaymentRecordCreateSerializer(serializers.Serializer):
-    payment_type = serializers.ChoiceField(choices=['RECEIPT', 'PAYMENT'], default='RECEIPT')
+    payment_type = serializers.ChoiceField(choices=['RECEIPT', 'PAYMENT'], default='RECEIPT', help_text="RECEIPT (Collection) / PAYMENT (Disbursement)")
     party_type = serializers.ChoiceField(choices=PartyType.choices, default=PartyType.CUSTOMER)
-    party_id = serializers.IntegerField()
-    order_id = serializers.IntegerField(required=False, allow_null=True)
+    party_id = serializers.IntegerField(help_text="Customer or Supplier ID")
+    order_id = serializers.IntegerField(required=False, allow_null=True, help_text="Optional CustomerOrder ID for auto-reconciliation")
     payment_date = serializers.DateField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=2)
-    payment_method = serializers.CharField(default='CASH')
-    deposit_to_account_id = serializers.IntegerField()
-    reference_no = serializers.CharField(required=False, allow_blank=True, default='')
+    payment_method = serializers.CharField(default='CASH', help_text="CASH, CHEQUE, BANK_TRANSFER, MFS_BKASH")
+    deposit_to_account_id = serializers.IntegerField(help_text="AccountHead ID for Cash/Bank account")
+    reference_no = serializers.CharField(required=False, allow_blank=True, default='', help_text="TrxID / Cheque No / Slip No")
     notes = serializers.CharField(required=False, allow_blank=True, default='')
 
+
+# =====================================================================
+# Bank Reconciliation Serializers
+# =====================================================================
 
 class BankReconciliationSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source='account.code', read_only=True)
@@ -181,7 +204,24 @@ class BankReconciliationSerializer(serializers.ModelSerializer):
             'id', 'account', 'account_code', 'account_name', 'statement_date',
             'statement_balance', 'gl_balance', 'unpresented_cheques_total', 'uncredited_deposits_total',
             'adjusted_balance', 'difference', 'status',
-            'attachment_url', 'notes', 'reconciled_by', 'reconciled_by_username',
-            'created_at', 'updated_at'
+            'attachment_url', 'notes', 'reconciled_by_username', 'created_at'
         ]
-        read_only_fields = ['id', 'difference', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'account_code', 'account_name', 'gl_balance',
+            'unpresented_cheques_total', 'uncredited_deposits_total',
+            'adjusted_balance', 'difference', 'status', 'reconciled_by_username', 'created_at'
+        ]
+
+
+class BankReconciliationCreateSerializer(serializers.Serializer):
+    account_id = serializers.IntegerField(help_text="Bank AccountHead ID")
+    statement_date = serializers.DateField(help_text="Closing date of bank statement")
+    statement_balance = serializers.DecimalField(max_digits=14, decimal_places=2, help_text="Closing balance from physical bank statement")
+    cleared_entry_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=list,
+        help_text="List of JournalEntry IDs that have cleared in the bank statement"
+    )
+    attachment_url = serializers.URLField(required=False, allow_blank=True, default='')
+    notes = serializers.CharField(required=False, allow_blank=True, default='')

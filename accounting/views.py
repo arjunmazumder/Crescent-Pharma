@@ -20,7 +20,7 @@ from .serializers import (
     VoucherSerializer, VoucherCreateSerializer, VoucherReverseSerializer,
     JournalEntrySerializer,
     PaymentRecordSerializer, PaymentRecordCreateSerializer,
-    BankReconciliationSerializer
+    BankReconciliationSerializer, BankReconciliationCreateSerializer
 )
 from .services import (
     VoucherPostingService, AccountingIntegrationService,
@@ -114,6 +114,12 @@ class VoucherViewSet(viewsets.ModelViewSet):
     filterset_fields = ['voucher_type', 'status', 'period', 'is_auto_generated', 'source_module', 'is_reversed']
     ordering_fields = ['voucher_date', 'id', 'total_debit', 'created_at']
 
+    @extend_schema(
+        summary='Create & Post Double-Entry Voucher',
+        description='Creates a new double-entry voucher with balanced line items (sum(Debit) == sum(Credit)).',
+        request=VoucherCreateSerializer,
+        responses={201: VoucherSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = VoucherCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -212,6 +218,12 @@ class PaymentRecordViewSet(viewsets.ModelViewSet):
     filterset_fields = ['payment_type', 'party_type', 'party_id', 'payment_method', 'order']
     ordering_fields = ['payment_date', 'amount', 'created_at']
 
+    @extend_schema(
+        summary='Record Customer Collection / Payment Receipt',
+        description='Records customer money receipt, creates double-entry receipt voucher, and reconciles sales invoice balance.',
+        request=PaymentRecordCreateSerializer,
+        responses={201: PaymentRecordSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = PaymentRecordCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -267,7 +279,9 @@ class BankReconciliationViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         summary='Execute Bank Reconciliation & Match Statement',
-        description='Computes unpresented cheques, uncredited deposits, and balances variance.'
+        description='Computes unpresented cheques, uncredited deposits, and balances variance.',
+        request=BankReconciliationCreateSerializer,
+        responses={201: BankReconciliationSerializer}
     )
     @action(detail=False, methods=['post'])
     def reconcile(self, request):
