@@ -56,7 +56,7 @@ class FiscalYearViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'code']
     filterset_fields = ['is_current', 'is_locked', 'is_closed']
 
-    @extend_schema(summary='Lock Fiscal Year against back-dated entries')
+    @extend_schema(summary='Lock Fiscal Year against back-dated entries', request=None)
     @action(detail=True, methods=['post'])
     def lock(self, request, pk=None):
         fy = self.get_object()
@@ -66,7 +66,7 @@ class FiscalYearViewSet(viewsets.ModelViewSet):
         fy.save(update_fields=['is_locked', 'locked_by', 'locked_at'])
         return Response({'message': f"Fiscal Year '{fy.name}' locked successfully."})
 
-    @extend_schema(summary='Unlock Fiscal Year')
+    @extend_schema(summary='Unlock Fiscal Year', request=None)
     @action(detail=True, methods=['post'])
     def unlock(self, request, pk=None):
         fy = self.get_object()
@@ -84,7 +84,7 @@ class AccountingPeriodViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filterset_fields = ['fiscal_year', 'is_current', 'is_locked', 'is_closed']
 
-    @extend_schema(summary='Lock Accounting Period')
+    @extend_schema(summary='Lock Accounting Period', request=None)
     @action(detail=True, methods=['post'])
     def lock(self, request, pk=None):
         period = self.get_object()
@@ -94,7 +94,7 @@ class AccountingPeriodViewSet(viewsets.ModelViewSet):
         period.save(update_fields=['is_locked', 'locked_by', 'locked_at'])
         return Response({'message': f"Accounting Period '{period.name}' locked successfully."})
 
-    @extend_schema(summary='Unlock Accounting Period')
+    @extend_schema(summary='Unlock Accounting Period', request=None)
     @action(detail=True, methods=['post'])
     def unlock(self, request, pk=None):
         period = self.get_object()
@@ -146,7 +146,9 @@ class VoucherViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         summary='Post/Approve Draft Voucher',
-        description='Transitions a DRAFT or SUBMITTED voucher to POSTED.'
+        description='Transitions a DRAFT or SUBMITTED voucher to POSTED.',
+        request=None,
+        responses={200: VoucherSerializer}
     )
     @action(detail=True, methods=['post'])
     def post_voucher(self, request, pk=None):
@@ -195,7 +197,7 @@ class VoucherViewSet(viewsets.ModelViewSet):
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-    @extend_schema(summary='Cancel Draft Voucher')
+    @extend_schema(summary='Cancel Draft Voucher', request=None)
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         voucher = self.get_object()
