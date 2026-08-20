@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from core.models import Role
+from core.models import Role, Lookup
 from inventory.models import Category, Product, Warehouse
 from inventory.services import InventoryService
 from sales.models import Customer, CustomerOrder, CustomerOrderItem, OrderStatus, PaymentMethod, CustomerType
@@ -309,7 +309,7 @@ class MarketingManagementModuleTestCase(TestCase):
         res = self.client.post('/api/marketing/targets/', data=payload, format='json')
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         target_id = res.data['id']
-        assigned_user = res.data.get('assigned_to_username') or res.data.get('assignedToUsername')
+        assigned_user = (res.data.get('assigned_to') or res.data.get('assignedTo') or {}).get('username') or res.data.get('assigned_to_username') or res.data.get('assignedToUsername')
         self.assertEqual(assigned_user, 'mpo_tanvir')
         items = res.data.get('product_items') or res.data.get('productItems')
         self.assertEqual(len(items), 2)
@@ -319,6 +319,20 @@ class MarketingManagementModuleTestCase(TestCase):
         self.assertEqual(res_ach.status_code, status.HTTP_200_OK)
         target_id_returned = res_ach.data.get('targetId') or res_ach.data.get('target_id')
         self.assertEqual(target_id_returned, target_id)
+        self.assertIn('assignedTo', res_ach.data)
+        self.assertEqual(res_ach.data['assignedTo']['username'], 'mpo_tanvir')
+
+        # Test filtering by product_id
+        res_ach_filter = self.client.get(f'/api/marketing/targets/{target_id}/achievement/?product_id={self.product_a.id}')
+        self.assertEqual(res_ach_filter.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_ach_filter.data['productBreakdown']), 1)
+        self.assertEqual(res_ach_filter.data['productBreakdown'][0]['productId'], self.product_a.id)
+
+        # Test filtering by date range and order status
+        res_ach_dates = self.client.get(f'/api/marketing/targets/{target_id}/achievement/?start_date=2026-08-01&end_date=2026-08-15&order_status=DELIVERED')
+        self.assertEqual(res_ach_dates.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_ach_dates.data['startDate'], '2026-08-01')
+        self.assertEqual(res_ach_dates.data['endDate'], '2026-08-15')
 
         # 3. GET /api/marketing/reports/mpo/{user_id}/
         res_scorecard = self.client.get(f'/api/marketing/reports/mpo/{self.mpo_user.id}/')
@@ -361,3 +375,49 @@ class MarketingManagementModuleTestCase(TestCase):
         self.assertIn(method2, ['BIOMETRIC_FINGERPRINT', 'Biometric Fingerprint'])
         device_id = res2.data['data'].get('biometric_device_id') or res2.data['data'].get('biometricDeviceId')
         self.assertEqual(device_id, 'SCANNER-DHAKA-04')
+
+    def test_dynamic_incentive_tier_configuration_from_lookup(self):
+        """Tests that incentive tiers and commission rates adapt dynamically to Lookup table records."""
+        # 1. Custom Lookup configuration: Super Tier at 150% with 8% commission
+        Lookup.objects.create(name='INCENTIVE_TIER_SUPER_THRESHOLD', value='150.00', is_active=True)
+        Lookup.objects.create(name='INCENTIVE_TIER_SUPER_RATE', value='8.00', is_active=True)
+        Lookup.objects.create(name='INCENTIVE_TIER_TARGET_THRESHOLD', value='110.00', is_active=True)
+        Lookup.objects.create(name='INCENTIVE_TIER_TARGET_RATE', value='4.00', is_active=True)
+
+        target = SalesTarget.objects.create(
+            title='Special Campaign',
+            assigned_to=self.mpo_user,
+            assigned_by=self.manager_user,
+            period_type=PeriodType.MONTHLY,
+            start_date=datetime.date(2026, 8, 1),
+            end_date=datetime.date(2026, 8, 31),
+            target_type=TargetType.AMOUNT_WISE,
+            total_target_amount=Decimal('100000.00')
+        )
+
+        # Book 160,000 BDT sales (160% achievement)
+        order = OrderService.create_order(
+            customer=self.customer,
+            items_data=[
+                {
+                    'product_id': self.product_a.id,
+                    'warehouse_id': self.warehouse.id,
+                    'batch_number': 'BATCH-2026-A1',
+                    'quantity': 640, # 640 * 250 = 160,000
+                    'unit_price': '250.00',
+                    'vat_percentage': '0.00',
+                    'discount_percentage': '0.00'
+                }
+            ],
+            user=self.mpo_user,
+            order_date=datetime.date(2026, 8, 15)
+        )
+        OrderService.deliver_order(order, user=self.manager_user)
+
+        res = TargetService.calculate_target_achievement(target)
+        self.assertEqual(res['amountAchievementPercentage'], 160.0)
+        self.assertTrue(res['incentiveEvaluation']['isAchieved'])
+        self.assertEqual(res['incentiveEvaluation']['incentiveTier'], 'Super Achiever (150%+)')
+        self.assertEqual(res['incentiveEvaluation']['commissionRatePercentage'], 8.0)
+        # 160,000 * 8% = 12,800 BDT
+        self.assertEqual(res['incentiveEvaluation']['potentialCommissionAmount'], '12800.00')

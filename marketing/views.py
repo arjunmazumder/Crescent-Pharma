@@ -1,3 +1,4 @@
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -94,13 +95,34 @@ class SalesTargetViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=['Marketing & Sales Targets'],
-        summary='Get Live Real-time Target Achievement Breakdown',
-        description='Computes real-time target achievement, product-wise actual sales vs targets, shift attendance compliance, and incentive tier qualification.'
+        summary='Get Live Real-time Target Achievement Breakdown with Filters',
+        description='Computes real-time target achievement, product-wise actual sales vs targets, shift attendance compliance, and incentive tier qualification. Supports filtering by date range, product ID, and order status.',
+        parameters=[
+            OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Optional evaluation start date (YYYY-MM-DD)', required=False),
+            OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='Optional evaluation end date (YYYY-MM-DD)', required=False),
+            OpenApiParameter(name='product_id', type=int, location=OpenApiParameter.QUERY, description='Filter breakdown for a specific product ID', required=False),
+            OpenApiParameter(name='order_status', type=str, location=OpenApiParameter.QUERY, description='Filter order status (e.g. DELIVERED, CONFIRMED)', required=False),
+        ]
     )
     @action(detail=True, methods=['get'], url_path='achievement')
     def achievement(self, request, pk=None):
-        target = self.get_object()
-        achievement_data = TargetService.calculate_target_achievement(target)
+        target = get_object_or_404(self.get_queryset(), pk=pk)
+        start_date_str = request.query_params.get('start_date') or request.query_params.get('startDate')
+        end_date_str = request.query_params.get('end_date') or request.query_params.get('endDate')
+        product_id_param = request.query_params.get('product_id') or request.query_params.get('productId')
+        order_status = request.query_params.get('order_status') or request.query_params.get('orderStatus')
+
+        start_date = parse_date(str(start_date_str).strip()) if start_date_str else None
+        end_date = parse_date(str(end_date_str).strip()) if end_date_str else None
+        product_id = int(product_id_param) if product_id_param and str(product_id_param).isdigit() else None
+
+        achievement_data = TargetService.calculate_target_achievement(
+            target=target,
+            start_date=start_date,
+            end_date=end_date,
+            product_id=product_id,
+            order_status=order_status
+        )
         return Response(achievement_data, status=status.HTTP_200_OK)
 
 

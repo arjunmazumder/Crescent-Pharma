@@ -666,12 +666,19 @@ class ProductTargetItemCreateSerializer(serializers.Serializer):
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
 
 
+class SimpleUserSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source='role.role_name', read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'employee_id', 'email', 'contact', 'role_name')
+
+
 class SalesTargetSerializer(serializers.ModelSerializer):
-    assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True)
-    assigned_to_employee_id = serializers.CharField(source='assigned_to.employee_id', read_only=True)
-    assigned_by_username = serializers.CharField(source='assigned_by.username', read_only=True)
     product_items = ProductTargetItemSerializer(many=True, read_only=True)
     items_count = serializers.SerializerMethodField(read_only=True)
+    assigned_to = SimpleUserSerializer(read_only=True)
+    assigned_by = SimpleUserSerializer(read_only=True)
 
     class Meta:
         model = SalesTarget
@@ -679,11 +686,6 @@ class SalesTargetSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'target_code',
-            'assigned_to',
-            'assigned_to_username',
-            'assigned_to_employee_id',
-            'assigned_by',
-            'assigned_by_username',
             'period_type',
             'start_date',
             'end_date',
@@ -694,6 +696,8 @@ class SalesTargetSerializer(serializers.ModelSerializer):
             'notes',
             'items_count',
             'product_items',
+            'assigned_to',
+            'assigned_by',
             'created_at',
             'updated_at',
         )

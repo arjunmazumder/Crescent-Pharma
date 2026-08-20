@@ -7,8 +7,8 @@ from users.serializers import PermissionSerializer
 
 
 @extend_schema(tags=['Core / Lookups'])
-class LookupViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Lookup.objects.filter(is_active=True).order_by('name', 'value')
+class LookupViewSet(viewsets.ModelViewSet):
+    queryset = Lookup.objects.all().order_by('name', 'value')
     serializer_class = LookupSerializer
     permission_classes = [permissions.IsAuthenticated]
     search_fields = ['name', 'value']

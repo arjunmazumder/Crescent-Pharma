@@ -11,22 +11,64 @@ User = get_user_model()
 
 class TargetService:
     @staticmethod
-    def calculate_target_achievement(target):
+    def get_incentive_config():
         """
-        Calculates real-time achievement for a SalesTarget instance.
-        Aggregates confirmed/delivered sales orders booked by the assigned MPO
-        within [start_date, end_date], product-wise quantity & revenue,
-        and dual-shift attendance compliance.
+        Loads dynamic incentive tier thresholds and commission rates from Lookup table
+        with fallback defaults.
+        Lookup Keys:
+        - INCENTIVE_TIER_SUPER_THRESHOLD (default: 120.00)
+        - INCENTIVE_TIER_SUPER_RATE (default: 5.00)
+        - INCENTIVE_TIER_TARGET_THRESHOLD (default: 100.00)
+        - INCENTIVE_TIER_TARGET_RATE (default: 3.00)
+        - INCENTIVE_TIER_NEAR_THRESHOLD (default: 80.00)
+        - INCENTIVE_TIER_NEAR_RATE (default: 1.00)
+        """
+        from core.models import Lookup
+
+        def get_lookup_decimal(name, default_val):
+            item = Lookup.objects.filter(name=name, is_active=True).first()
+            if item and item.value:
+                try:
+                    return Decimal(str(item.value).strip())
+                except Exception:
+                    pass
+            return Decimal(str(default_val))
+
+        return {
+            'super_threshold': get_lookup_decimal('INCENTIVE_TIER_SUPER_THRESHOLD', '120.00'),
+            'super_rate': get_lookup_decimal('INCENTIVE_TIER_SUPER_RATE', '5.00'),
+            'target_threshold': get_lookup_decimal('INCENTIVE_TIER_TARGET_THRESHOLD', '100.00'),
+            'target_rate': get_lookup_decimal('INCENTIVE_TIER_TARGET_RATE', '3.00'),
+            'near_threshold': get_lookup_decimal('INCENTIVE_TIER_NEAR_THRESHOLD', '80.00'),
+            'near_rate': get_lookup_decimal('INCENTIVE_TIER_NEAR_RATE', '1.00'),
+        }
+
+    @staticmethod
+    def calculate_target_achievement(target, start_date=None, end_date=None, product_id=None, order_status=None):
+        """
+        Calculates real-time achievement for a SalesTarget instance with optional filters.
+        - start_date & end_date: custom evaluation date range (defaults to target.start_date and target.end_date)
+        - product_id: filter product breakdown for a specific product
+        - order_status: filter order status ('DELIVERED', 'CONFIRMED', or None for both)
         """
         if isinstance(target, (int, str)):
             target = SalesTarget.objects.get(id=int(target))
 
+        eval_start = start_date or target.start_date
+        eval_end = end_date or target.end_date
+
+        allowed_statuses = [OrderStatus.CONFIRMED, OrderStatus.DELIVERED]
+        if order_status:
+            status_upper = str(order_status).strip().upper()
+            if status_upper in [OrderStatus.CONFIRMED, OrderStatus.DELIVERED, 'CONFIRMED', 'DELIVERED']:
+                allowed_statuses = [status_upper]
+
         # 1. Fetch relevant orders
         orders = CustomerOrder.objects.filter(
             created_by=target.assigned_to,
-            order_date__gte=target.start_date,
-            order_date__lte=target.end_date,
-            status__in=[OrderStatus.CONFIRMED, OrderStatus.DELIVERED]
+            order_date__gte=eval_start,
+            order_date__lte=eval_end,
+            status__in=allowed_statuses
         )
 
         total_orders_count = orders.count()
@@ -48,6 +90,8 @@ class TargetService:
         # 2. Product-wise Target Breakdown
         product_breakdown = []
         target_items = target.product_items.select_related('product').all()
+        if product_id:
+            target_items = target_items.filter(product_id=product_id)
 
         for item in target_items:
             order_items = CustomerOrderItem.objects.filter(
@@ -91,8 +135,8 @@ class TargetService:
         # 3. Attendance & Dual-Shift Performance
         attendances = Attendance.objects.filter(
             user=target.assigned_to,
-            date__gte=target.start_date,
-            date__lte=target.end_date
+            date__gte=eval_start,
+            date__lte=eval_end
         )
 
         shift_1_count = attendances.filter(
@@ -113,19 +157,25 @@ class TargetService:
             status=Attendance.STATUS_CHOICES['LATE']
         ).values('date').distinct().count()
 
-        # 4. Incentive Tier Evaluation
+        # 4. Incentive Tier Evaluation (Dynamic from Lookup configuration)
+        cfg = TargetService.get_incentive_config()
         is_target_achieved = total_achieved_amount >= total_target_amount and (total_target_amount > Decimal('0.00'))
-        if amount_achievement_percentage >= Decimal('120.00'):
-            incentive_tier = 'Super Achiever (120%+)'
-            commission_rate = Decimal('5.00')
-        elif amount_achievement_percentage >= Decimal('100.00'):
-            incentive_tier = 'Target Achiever (100%+)'
-            commission_rate = Decimal('3.00')
-        elif amount_achievement_percentage >= Decimal('80.00'):
-            incentive_tier = 'Near Target (80-99%)'
-            commission_rate = Decimal('1.00')
+
+        super_th = cfg['super_threshold']
+        target_th = cfg['target_threshold']
+        near_th = cfg['near_threshold']
+
+        if amount_achievement_percentage >= super_th:
+            incentive_tier = f"Super Achiever ({super_th:.0f}%+)"
+            commission_rate = cfg['super_rate']
+        elif amount_achievement_percentage >= target_th:
+            incentive_tier = f"Target Achiever ({target_th:.0f}%+)"
+            commission_rate = cfg['target_rate']
+        elif amount_achievement_percentage >= near_th:
+            incentive_tier = f"Near Target ({near_th:.0f}-{target_th - 1:.0f}%)" if target_th > near_th else f"Near Target ({near_th:.0f}%+)"
+            commission_rate = cfg['near_rate']
         else:
-            incentive_tier = 'Below Target (<80%)'
+            incentive_tier = f"Below Target (<{near_th:.0f}%)"
             commission_rate = Decimal('0.00')
 
         potential_commission = (total_achieved_amount * (commission_rate / Decimal('100.0'))).quantize(Decimal('0.01'))
@@ -142,15 +192,12 @@ class TargetService:
             'targetId': target.id,
             'targetCode': target.target_code,
             'title': target.title,
-            'assignedToId': target.assigned_to.id,
-            'assignedToUsername': target.assigned_to.username,
-            'employeeId': getattr(target.assigned_to, 'employee_id', ''),
-            'territoryName': target.territory_name or '',
             'periodType': target.period_type,
-            'startDate': str(target.start_date),
-            'endDate': str(target.end_date),
+            'startDate': str(eval_start),
+            'endDate': str(eval_end),
             'targetType': target.target_type,
             'status': target.status,
+            'territoryName': target.territory_name or '',
             'totalTargetAmount': str(total_target_amount),
             'totalAchievedAmount': str(total_achieved_amount),
             'amountAchievementPercentage': float(amount_achievement_percentage),
@@ -168,6 +215,14 @@ class TargetService:
                 'incentiveTier': incentive_tier,
                 'commissionRatePercentage': float(commission_rate),
                 'potentialCommissionAmount': str(potential_commission)
+            },
+            'assignedTo': {
+                'id': target.assigned_to.id,
+                'username': target.assigned_to.username,
+                'employeeId': getattr(target.assigned_to, 'employee_id', ''),
+                'email': target.assigned_to.email,
+                'contact': getattr(target.assigned_to, 'contact', ''),
+                'roleName': target.assigned_to.role.role_name if target.assigned_to.role else ''
             }
         }
 
@@ -218,13 +273,16 @@ class TargetService:
         # Group by MPO user
         mpo_map = {}
         for ev in evaluated_targets:
-            uid = ev['assignedToId']
+            assigned_user = ev.get('assignedTo') or {}
+            uid = assigned_user.get('id')
+            if not uid:
+                continue
             if uid not in mpo_map:
                 mpo_map[uid] = {
                     'mpoId': uid,
-                    'username': ev['assignedToUsername'],
-                    'employeeId': ev['employeeId'],
-                    'territoryName': ev['territoryName'],
+                    'username': assigned_user.get('username', ''),
+                    'employeeId': assigned_user.get('employeeId', ''),
+                    'territoryName': ev.get('territoryName', ''),
                     'targetAmount': Decimal('0.00'),
                     'achievedAmount': Decimal('0.00'),
                     'totalOrders': 0,
