@@ -1,5 +1,6 @@
 import datetime
 from decimal import Decimal
+from django.db import models
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from django.utils import timezone
@@ -12,7 +13,7 @@ from .models import (
     AccountHead, FiscalYear, AccountingPeriod,
     Voucher, JournalEntry, PaymentRecord,
     BankReconciliation, VoucherStatus, VoucherType,
-    AccountType
+    AccountType, ReconciliationStatus
 )
 from .serializers import (
     AccountHeadSerializer, AccountHeadTreeSerializer,

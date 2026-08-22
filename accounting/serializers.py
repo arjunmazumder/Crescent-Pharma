@@ -49,18 +49,30 @@ class AccountHeadTreeSerializer(serializers.ModelSerializer):
 # Fiscal Calendar Serializers
 # =====================================================================
 
+class FiscalYearMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FiscalYear
+        fields = [
+            'id', 'name', 'code', 'start_date', 'end_date',
+            'is_current', 'is_locked', 'is_closed'
+        ]
+
+
 class AccountingPeriodSerializer(serializers.ModelSerializer):
+    fiscal_year_name = serializers.CharField(source='fiscal_year.name', read_only=True)
     fiscal_year_code = serializers.CharField(source='fiscal_year.code', read_only=True)
+    fiscal_year_details = FiscalYearMiniSerializer(source='fiscal_year', read_only=True)
 
     class Meta:
         model = AccountingPeriod
         fields = [
-            'id', 'fiscal_year', 'fiscal_year_code', 'name', 'period_number',
+            'id', 'fiscal_year', 'fiscal_year_code', 'fiscal_year_name', 'fiscal_year_details',
+            'name', 'period_number',
             'start_date', 'end_date', 'is_current', 'is_locked', 'is_closed',
             'created_at'
         ]
         read_only_fields = [
-            'id', 'fiscal_year_code', 'is_locked', 'is_closed', 'created_at'
+            'id', 'fiscal_year_code', 'fiscal_year_name', 'fiscal_year_details', 'is_locked', 'is_closed', 'created_at'
         ]
 
 
