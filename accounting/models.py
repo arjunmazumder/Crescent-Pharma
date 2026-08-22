@@ -1,3 +1,4 @@
+import calendar
 import re
 import datetime
 from decimal import Decimal
@@ -124,7 +125,7 @@ class FiscalYear(models.Model):
     name = models.CharField(max_length=100, unique=True, help_text="e.g. FY 2026-2027")
     code = models.CharField(max_length=50, unique=True, help_text="e.g. FY26-27")
     start_date = models.DateField()
-    end_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
     is_current = models.BooleanField(default=False)
     is_locked = models.BooleanField(default=False, help_text="Prevents back-dated postings")
     is_closed = models.BooleanField(default=False, help_text="Year-end closed flag")
@@ -162,10 +163,61 @@ class FiscalYear(models.Model):
         status = " (Current)" if self.is_current else (" (Locked)" if self.is_locked else "")
         return f"{self.name}{status}"
 
+    def generate_monthly_periods(self):
+        """
+        Automatically generates monthly AccountingPeriod records from start_date to end_date.
+        """
+        if not self.start_date or not self.end_date:
+            return
+
+        today = datetime.date.today()
+        curr_start = self.start_date
+        period_no = 1
+
+        while curr_start <= self.end_date:
+            _, last_day = calendar.monthrange(curr_start.year, curr_start.month)
+            curr_month_end = datetime.date(curr_start.year, curr_start.month, last_day)
+            period_end = min(curr_month_end, self.end_date)
+            period_name = curr_start.strftime("%B %Y")
+
+            is_cur = curr_start <= today <= period_end if self.is_current else False
+
+            AccountingPeriod.objects.get_or_create(
+                fiscal_year=self,
+                period_number=period_no,
+                defaults={
+                    'name': period_name,
+                    'start_date': curr_start,
+                    'end_date': period_end,
+                    'is_current': is_cur
+                }
+            )
+
+            # Advance to the first day of next month
+            if curr_start.month == 12:
+                next_month_start = datetime.date(curr_start.year + 1, 1, 1)
+            else:
+                next_month_start = datetime.date(curr_start.year, curr_start.month + 1, 1)
+
+            curr_start = next_month_start
+            period_no += 1
+
     def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        if not self.end_date and self.start_date:
+            try:
+                next_year = self.start_date.replace(year=self.start_date.year + 1)
+            except ValueError:
+                next_year = self.start_date.replace(year=self.start_date.year + 1, day=28)
+            self.end_date = next_year - datetime.timedelta(days=1)
+
         if self.is_current:
             FiscalYear.objects.exclude(pk=self.pk).update(is_current=False)
+
         super().save(*args, **kwargs)
+
+        if is_new or not self.periods.exists():
+            self.generate_monthly_periods()
 
 
 class AccountingPeriod(models.Model):

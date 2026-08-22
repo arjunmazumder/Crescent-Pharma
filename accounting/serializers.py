@@ -77,6 +77,9 @@ class FiscalYearSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'is_locked', 'is_closed', 'periods', 'created_at'
         ]
+        extra_kwargs = {
+            'end_date': {'required': False}
+        }
 
 
 # =====================================================================

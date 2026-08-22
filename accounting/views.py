@@ -56,6 +56,13 @@ class FiscalYearViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'code']
     filterset_fields = ['is_current', 'is_locked', 'is_closed']
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        out_serializer = self.get_serializer(instance)
+        return Response(out_serializer.data, status=status.HTTP_201_CREATED)
+
     @extend_schema(summary='Lock Fiscal Year against back-dated entries', request=None)
     @action(detail=True, methods=['post'])
     def lock(self, request, pk=None):

@@ -290,3 +290,35 @@ class AccountingModuleTests(TestCase):
             )
 
         self.assertIn("is locked", str(ctx.exception))
+
+    def test_auto_generate_monthly_periods_on_fiscal_year_creation(self):
+        """Validates that creating a new Fiscal Year automatically generates all 12 monthly Accounting Periods."""
+        new_fy = FiscalYear.objects.create(
+            name="FY 2027-2028 Test",
+            code="FY27-28-TEST",
+            start_date=datetime.date(2027, 7, 1),
+            end_date=datetime.date(2028, 6, 30)
+        )
+        self.assertEqual(new_fy.periods.count(), 12)
+        p1 = new_fy.periods.get(period_number=1)
+        self.assertEqual(p1.name, "July 2027")
+        self.assertEqual(p1.start_date, datetime.date(2027, 7, 1))
+        self.assertEqual(p1.end_date, datetime.date(2027, 7, 31))
+
+        p12 = new_fy.periods.get(period_number=12)
+        self.assertEqual(p12.name, "June 2028")
+        self.assertEqual(p12.start_date, datetime.date(2028, 6, 1))
+        self.assertEqual(p12.end_date, datetime.date(2028, 6, 30))
+
+    def test_auto_calculate_end_date_and_periods_calendar_year(self):
+        """Validates calendar year auto-calculation: providing only start_date calculates end_date and generates periods."""
+        cal_fy = FiscalYear.objects.create(
+            name="FY 2029 Calendar Year",
+            code="FY2029",
+            start_date=datetime.date(2029, 1, 1)
+            # end_date omitted!
+        )
+        self.assertEqual(cal_fy.end_date, datetime.date(2029, 12, 31))
+        self.assertEqual(cal_fy.periods.count(), 12)
+        self.assertEqual(cal_fy.periods.get(period_number=1).name, "January 2029")
+        self.assertEqual(cal_fy.periods.get(period_number=12).name, "December 2029")
