@@ -171,11 +171,31 @@ class VoucherReverseSerializer(serializers.Serializer):
 # Payment & Collection Serializers
 # =====================================================================
 
+class PaymentRecordAccountMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountHead
+        fields = ['id', 'code', 'name', 'account_type', 'currency', 'is_reconciliation']
+
+
+class PaymentRecordOrderMiniSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    order_number = serializers.CharField(read_only=True)
+    order_date = serializers.DateField(read_only=True)
+    delivery_date = serializers.DateField(read_only=True, allow_null=True)
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    paid_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    payment_status = serializers.CharField(read_only=True)
+    status = serializers.CharField(read_only=True)
+
+
 class PaymentRecordSerializer(serializers.ModelSerializer):
     deposit_account_name = serializers.CharField(source='deposit_to_account.name', read_only=True)
     deposit_account_code = serializers.CharField(source='deposit_to_account.code', read_only=True)
+    deposit_account_details = PaymentRecordAccountMiniSerializer(source='deposit_to_account', read_only=True)
     voucher_number = serializers.CharField(source='voucher.voucher_number', read_only=True)
     order_number = serializers.CharField(source='order.order_number', read_only=True)
+    order_details = PaymentRecordOrderMiniSerializer(source='order', read_only=True)
+    party_details = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentRecord
@@ -183,12 +203,42 @@ class PaymentRecordSerializer(serializers.ModelSerializer):
             'id', 'receipt_no', 'payment_type', 'party_type', 'party_id',
             'order', 'order_number', 'payment_date', 'amount',
             'payment_method', 'deposit_to_account', 'deposit_account_name', 'deposit_account_code',
-            'voucher_number', 'reference_no', 'notes', 'created_at'
+            'voucher_number', 'reference_no', 'notes', 'created_at',
+            'party_details', 'order_details', 'deposit_account_details'
         ]
         read_only_fields = [
             'id', 'receipt_no', 'order_number', 'deposit_account_name',
-            'deposit_account_code', 'voucher_number', 'created_at'
+            'deposit_account_code', 'voucher_number', 'created_at',
+            'party_details', 'order_details', 'deposit_account_details'
         ]
+
+    def get_party_details(self, obj):
+        if obj.party_type == PartyType.CUSTOMER:
+            from sales.models import Customer
+            cust = Customer.objects.filter(id=obj.party_id).first()
+            if cust:
+                return {
+                    'id': cust.id,
+                    'customer_code': cust.customer_code,
+                    'name': cust.name,
+                    'proprietor_name': cust.proprietor_name,
+                    'phone': cust.phone,
+                    'email': cust.email,
+                    'address': cust.address,
+                    'city': cust.city
+                }
+        elif obj.party_type == PartyType.EMPLOYEE:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            user = User.objects.filter(id=obj.party_id).first()
+            if user:
+                return {
+                    'id': user.id,
+                    'username': user.username,
+                    'full_name': user.get_full_name() or user.username,
+                    'email': user.email
+                }
+        return None
 
 
 class PaymentRecordCreateSerializer(serializers.Serializer):
