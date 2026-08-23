@@ -20,16 +20,14 @@ User = get_user_model()
 class SalesTargetViewSet(viewsets.ModelViewSet):
     queryset = SalesTarget.objects.all().select_related('assigned_to', 'assigned_by').prefetch_related('product_items__product').order_by('-start_date', '-created_at')
     serializer_class = SalesTargetSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     search_fields = ['title', 'target_code', 'assigned_to__username', 'assigned_to__employee_id', 'territory_name', 'notes']
     filterset_fields = ['assigned_to', 'period_type', 'target_type', 'status', 'start_date', 'end_date']
     ordering_fields = ['id', 'start_date', 'end_date', 'total_target_amount', 'created_at']
     ordering = ['-start_date', '-created_at']
 
     def get_queryset(self):
-        if self.request.user.is_superuser or self.request.user.is_staff:
-            return self.queryset.all()
-        return self.queryset.filter(assigned_to=self.request.user)
+        return self.queryset.all()
 
     @extend_schema(
         tags=['Marketing & Sales Targets'],
@@ -59,7 +57,7 @@ class SalesTargetViewSet(viewsets.ModelViewSet):
             target = SalesTarget.objects.create(
                 title=data['title'],
                 assigned_to=assigned_user,
-                assigned_by=request.user,
+                assigned_by=request.user if request.user.is_authenticated else None,
                 period_type=data.get('period_type', PeriodType.MONTHLY),
                 start_date=data['start_date'],
                 end_date=data['end_date'],
