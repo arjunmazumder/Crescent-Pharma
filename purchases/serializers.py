@@ -1,4 +1,5 @@
 from decimal import Decimal
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from purchases.models import (
     Supplier, SupplierType, SupplyCategory, AuditStatus, IncotermsChoice,
@@ -10,6 +11,22 @@ from purchases.models import (
 from inventory.models import Product, Warehouse
 from inventory.serializers import SimpleProductSerializer, WarehouseSerializer
 from accounting.models import AccountHead
+
+User = get_user_model()
+
+
+class SimpleUserSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source='role.role_name', read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'employee_id', 'email', 'contact', 'role_name')
+
+
+class SimpleAccountHeadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountHead
+        fields = ('id', 'code', 'name', 'account_type', 'bank_account_no', 'bank_branch', 'routing_number', 'currency')
 
 
 # -----------------------------------------------------------------------------
@@ -47,6 +64,28 @@ class SupplierSerializer(serializers.ModelSerializer):
 
     def get_active_lcs_count(self, obj):
         return obj.letters_of_credit.exclude(status__in=[LetterOfCreditStatus.CLOSED, LetterOfCreditStatus.CANCELLED]).count()
+
+
+class SupplierCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Supplier
+        fields = (
+            'company_name',
+            'supplier_type',
+            'supply_category',
+            'country',
+            'currency',
+            'contact_person_name',
+            'phone_number',
+            'email_address',
+            'office_address',
+            'drug_license_number',
+            'drug_license_expiry_date',
+            'gmp_certified',
+            'incoterm',
+            'lead_time_in_days',
+            'special_notes',
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -89,7 +128,9 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     delivery_warehouse_details = WarehouseSerializer(source='delivery_warehouse', read_only=True)
     items = PurchaseOrderItemSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_details = SimpleUserSerializer(source='created_by', read_only=True)
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True)
+    approved_by_details = SimpleUserSerializer(source='approved_by', read_only=True)
 
     class Meta:
         model = PurchaseOrder
@@ -115,8 +156,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             'cancellation_reason',
             'created_by',
             'created_by_username',
+            'created_by_details',
             'approved_by',
             'approved_by_username',
+            'approved_by_details',
             'approved_at',
             'created_at',
             'updated_at',
@@ -191,9 +234,11 @@ class LCLandingCostSerializer(serializers.ModelSerializer):
 class LetterOfCreditSerializer(serializers.ModelSerializer):
     supplier_details = SimpleSupplierSerializer(source='supplier', read_only=True)
     issuing_bank_name = serializers.CharField(source='issuing_bank_account.name', read_only=True)
+    issuing_bank_account_details = SimpleAccountHeadSerializer(source='issuing_bank_account', read_only=True)
     documents = LCDocumentSerializer(many=True, read_only=True)
     landing_cost = LCLandingCostSerializer(read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_details = SimpleUserSerializer(source='created_by', read_only=True)
 
     class Meta:
         model = LetterOfCredit
@@ -204,6 +249,7 @@ class LetterOfCreditSerializer(serializers.ModelSerializer):
             'purchase_order',
             'issuing_bank_account',
             'issuing_bank_name',
+            'issuing_bank_account_details',
             'issuing_branch_name',
             'letter_of_credit_type',
             'incoterm',
@@ -227,6 +273,7 @@ class LetterOfCreditSerializer(serializers.ModelSerializer):
             'special_notes',
             'created_by',
             'created_by_username',
+            'created_by_details',
             'created_at',
             'updated_at',
             'landing_cost',
@@ -270,7 +317,33 @@ class LetterOfCreditCreateSerializer(serializers.Serializer):
 
 
 class LCStageAdvanceSerializer(serializers.Serializer):
-    next_status = serializers.ChoiceField(choices=LetterOfCreditStatus.choices)
+    next_status = serializers.ChoiceField(choices=LetterOfCreditStatus.choices, help_text="Target stage for the Letter of Credit")
+
+
+class LCDocumentCreateSerializer(serializers.Serializer):
+    document_type = serializers.ChoiceField(
+        choices=LetterOfCreditDocumentType.choices,
+        default=LetterOfCreditDocumentType.OTHER,
+        help_text="Type of document (e.g. BILL_OF_LADING, PACKING_LIST, CERTIFICATE_OF_ANALYSIS, BILL_OF_ENTRY)"
+    )
+    document_title = serializers.CharField(max_length=200, required=True, help_text="Human-readable title for the document")
+    document_file_url = serializers.CharField(max_length=500, required=True, help_text="URL / Path to the uploaded document")
+
+
+class LCLandedCostCreateSerializer(serializers.Serializer):
+    customs_duty = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Customs Duty (CD)")
+    regulatory_duty = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Regulatory Duty (RD)")
+    supplementary_duty = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Supplementary Duty (SD)")
+    value_added_tax = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Import Value Added Tax (VAT)")
+    advance_income_tax = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Advance Income Tax (AIT)")
+    advance_tax = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Advance Tax (AT)")
+    freight_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="International Freight Charges")
+    insurance_premium = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Marine Insurance Premium")
+    clearing_and_forwarding_agency_fee = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="C&F Agent Fees")
+    port_demurrage_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Port Demurrage / Storage Charges")
+    bank_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Bank Charges / Commission")
+    other_handling_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal('0.00'), help_text="Other Handling & Transport Charges")
+    finalize = serializers.BooleanField(required=False, default=False, help_text="If true, marks landed cost as finalized and locks it")
 
 
 # -----------------------------------------------------------------------------
@@ -306,7 +379,9 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     purchase_order_number = serializers.CharField(source='purchase_order.purchase_order_number', read_only=True)
     letter_of_credit_number = serializers.CharField(source='letter_of_credit.letter_of_credit_number', read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_details = SimpleUserSerializer(source='created_by', read_only=True)
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True)
+    approved_by_details = SimpleUserSerializer(source='approved_by', read_only=True)
     accounting_voucher_number = serializers.CharField(source='accounting_voucher.voucher_number', read_only=True)
 
     class Meta:
@@ -328,8 +403,10 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
             'special_notes',
             'created_by',
             'created_by_username',
+            'created_by_details',
             'approved_by',
             'approved_by_username',
+            'approved_by_details',
             'approved_at',
             'created_at',
             'updated_at',

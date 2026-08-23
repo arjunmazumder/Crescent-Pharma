@@ -13,11 +13,12 @@ from purchases.models import (
     LCLandingCost, GoodsReceivedNote, GoodsReceivedNoteStatus
 )
 from purchases.serializers import (
-    SupplierSerializer, SimpleSupplierSerializer,
+    SupplierSerializer, SimpleSupplierSerializer, SupplierCreateSerializer,
     PurchaseOrderSerializer, PurchaseOrderCreateSerializer, PurchaseOrderCancelSerializer,
     PurchaseOrderItemSerializer,
     LetterOfCreditSerializer, LetterOfCreditCreateSerializer, LCStageAdvanceSerializer,
-    LCDocumentSerializer, LCLandingCostSerializer,
+    LCDocumentSerializer, LCDocumentCreateSerializer,
+    LCLandingCostSerializer, LCLandedCostCreateSerializer,
     GoodsReceivedNoteSerializer, GoodsReceivedNoteCreateSerializer
 )
 from purchases.services import (
@@ -35,6 +36,17 @@ from accounting.models import AccountHead
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.all().order_by('-id')
     serializer_class = SupplierSerializer
+
+    @extend_schema(
+        summary='Create a New Supplier Profile',
+        request=SupplierCreateSerializer,
+        responses={201: SupplierSerializer}
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = SupplierCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        supplier = serializer.save()
+        return Response(SupplierSerializer(supplier).data, status=status.HTTP_201_CREATED)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -101,6 +113,11 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    @extend_schema(
+        summary='Create a New Purchase Order',
+        request=PurchaseOrderCreateSerializer,
+        responses={201: PurchaseOrderSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = PurchaseOrderCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -137,6 +154,11 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary='Approve a Purchase Order',
+        request=None,
+        responses={200: PurchaseOrderSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         po = self.get_object()
@@ -152,6 +174,11 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary='Cancel a Purchase Order',
+        request=PurchaseOrderCancelSerializer,
+        responses={200: PurchaseOrderSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='cancel')
     def cancel(self, request, pk=None):
         po = self.get_object()
@@ -204,6 +231,11 @@ class LetterOfCreditViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    @extend_schema(
+        summary='Create a New Letter of Credit (LC)',
+        request=LetterOfCreditCreateSerializer,
+        responses={201: LetterOfCreditSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = LetterOfCreditCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -252,6 +284,11 @@ class LetterOfCreditViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary='Advance LC Stage / Pipeline Status',
+        request=LCStageAdvanceSerializer,
+        responses={200: LetterOfCreditSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='advance-stage')
     def advance_stage(self, request, pk=None):
         lc = self.get_object()
@@ -272,25 +309,40 @@ class LetterOfCreditViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary='Upload / Add LC Document',
+        request=LCDocumentCreateSerializer,
+        responses={201: LCDocumentSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='add-document')
     def add_document(self, request, pk=None):
         lc = self.get_object()
-        doc_type = request.data.get('document_type')
-        title = request.data.get('document_title') or request.data.get('title')
-        file_url = request.data.get('document_file_url') or request.data.get('file_url')
-
-        if not title or not file_url:
-            return Response({'error': "document_title and document_file_url are required."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = LCDocumentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        doc_type = serializer.validated_data.get('document_type', 'OTHER')
+        title = serializer.validated_data['document_title']
+        file_url = serializer.validated_data['document_file_url']
 
         doc = LCManagementService.add_lc_document(
             letter_of_credit=lc,
-            document_type=doc_type or 'OTHER',
+            document_type=doc_type,
             document_title=title,
             document_file_url=file_url,
             user=request.user if request.user.is_authenticated else None
         )
         return Response(LCDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
 
+    @extend_schema(
+        methods=['POST'],
+        summary='Calculate and Save Landed Cost for LC',
+        request=LCLandedCostCreateSerializer,
+        responses={200: LCLandingCostSerializer}
+    )
+    @extend_schema(
+        methods=['GET'],
+        summary='Get Landed Cost & Item Allocations for LC',
+        responses={200: LCLandingCostSerializer}
+    )
     @action(detail=True, methods=['get', 'post'], url_path='landed-cost')
     def landed_cost(self, request, pk=None):
         lc = self.get_object()
@@ -303,10 +355,13 @@ class LetterOfCreditViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
 
         elif request.method == 'POST':
-            finalize = request.data.get('finalize', False)
+            serializer = LCLandedCostCreateSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            cost_data = serializer.validated_data
+            finalize = cost_data.get('finalize', False)
             landing_cost = LandedCostService.calculate_and_save_landed_cost(
                 letter_of_credit=lc,
-                cost_data=request.data,
+                cost_data=cost_data,
                 user=request.user if request.user.is_authenticated else None,
                 finalize=finalize
             )
@@ -352,6 +407,11 @@ class GoodsReceivedNoteViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    @extend_schema(
+        summary='Create Draft Goods Received Note (GRN)',
+        request=GoodsReceivedNoteCreateSerializer,
+        responses={201: GoodsReceivedNoteSerializer}
+    )
     def create(self, request, *args, **kwargs):
         serializer = GoodsReceivedNoteCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -386,6 +446,11 @@ class GoodsReceivedNoteViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary='Approve GRN, Inflow Stock and Post Accounting Bill',
+        request=None,
+        responses={200: GoodsReceivedNoteSerializer}
+    )
     @action(detail=True, methods=['post'], url_path='approve-and-receive')
     def approve_and_receive(self, request, pk=None):
         grn = self.get_object()

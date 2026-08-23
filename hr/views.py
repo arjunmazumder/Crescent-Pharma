@@ -404,7 +404,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'data': PayrollSerializer(payroll).data
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['HR - Payroll'], summary='Approve Monthly Payroll')
+    @extend_schema(tags=['HR - Payroll'], summary='Approve Monthly Payroll', request=None, responses={200: PayrollSerializer})
     @action(detail=True, methods=['post'], url_path='approve')
     def approve_payroll(self, request, pk=None):
         payroll = self.get_object()
@@ -581,7 +581,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
-    @extend_schema(tags=['HR - Leave Management'], summary='Approve Leave Request')
+    @extend_schema(tags=['HR - Leave Management'], summary='Approve Leave Request', request=None, responses={200: LeaveRequestSerializer})
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         leave_request = self.get_object()
@@ -622,7 +622,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             'data': LeaveRequestSerializer(updated_leave).data
         }, status=status.HTTP_200_OK)
 
-    @extend_schema(tags=['HR - Leave Management'], summary='Cancel Leave Request')
+    @extend_schema(tags=['HR - Leave Management'], summary='Cancel Leave Request', request=None, responses={200: LeaveRequestSerializer})
     @action(detail=True, methods=['post'], url_path='cancel')
     def cancel(self, request, pk=None):
         leave_request = self.get_object()
