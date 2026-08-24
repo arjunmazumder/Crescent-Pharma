@@ -52,9 +52,29 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
     search_fields = ['order_number', 'customer__name', 'customer__customer_code', 'notes', 'shipping_address']
-    filterset_fields = ['customer', 'status', 'payment_status', 'payment_method', 'order_date']
+    filterset_fields = ['customer', 'status', 'payment_status', 'payment_method', 'order_date', 'created_by']
     ordering_fields = ['id', 'order_number', 'order_date', 'total_amount', 'created_at']
     ordering = ['-id']
+
+    def get_queryset(self):
+        if self.request.user.is_superuser or self.request.user.is_staff:
+            return self.queryset.all()
+        return self.queryset.filter(created_by=self.request.user)
+
+    @extend_schema(
+        tags=['Customers & Sales Orders'],
+        summary="Get Logged-in Marketing Officer's Orders / Invoices",
+        description="Returns all sales orders and invoices created by the currently authenticated marketing officer."
+    )
+    @action(detail=False, methods=['get'], url_path='my-orders')
+    def my_orders(self, request):
+        orders_qs = self.queryset.filter(created_by=request.user)
+        page = self.paginate_queryset(orders_qs)
+        if page is not None:
+            serializer = CustomerOrderSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = CustomerOrderSerializer(orders_qs, many=True)
+        return Response(serializer.data)
 
     @extend_schema(
         tags=['Customers & Sales Orders'],

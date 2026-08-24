@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'marketing',
     'accounting',
     'purchases',
+    'production',
     'api',
 ]
 
@@ -147,6 +148,8 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Accounting / Payments & Collections', 'description': 'Customer money receipts, vendor disbursements, and invoice payment reconciliation'},
         {'name': 'Accounting / Bank Reconciliation', 'description': 'Bank Statement matching, unpresented cheques, and BRS audit generation'},
         {'name': 'Accounting / Financial Reports', 'description': 'Real-time General Ledger, Cash/Bank Book, Trial Balance, P&L, Balance Sheet, and VAT reports'},
+        {'name': 'Production / Bill of Materials (BOM)', 'description': 'Master recipes, formulas, raw and packaging material specifications, and batch material scaling'},
+        {'name': 'Production / Manufacturing Batches & WIP', 'description': 'Production lines, master scheduling, batch execution, material issue slips, in-process IPQC logs, and finished goods transfers'},
     ],
 }
 
