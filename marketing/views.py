@@ -149,6 +149,25 @@ class MarketingReportViewSet(viewsets.ViewSet):
 
     @extend_schema(
         tags=['Marketing & Sales Targets'],
+        summary='Get Logged-in MPO Live Commission Summary',
+        description='Returns the authenticated MPO total earned commission, tier qualifications, and per-target commission breakdown.',
+        parameters=[
+            OpenApiParameter(name='start_date', type=str, location=OpenApiParameter.QUERY, description='Optional start date filter (YYYY-MM-DD)', required=False),
+            OpenApiParameter(name='end_date', type=str, location=OpenApiParameter.QUERY, description='Optional end date filter (YYYY-MM-DD)', required=False),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='my-commission')
+    def my_commission(self, request):
+        start_date_str = request.query_params.get('start_date') or request.query_params.get('startDate')
+        end_date_str = request.query_params.get('end_date') or request.query_params.get('endDate')
+        start_date = parse_date(str(start_date_str).strip()) if start_date_str else None
+        end_date = parse_date(str(end_date_str).strip()) if end_date_str else None
+
+        commission_data = TargetService.get_mpo_commission_summary(user=request.user, start_date=start_date, end_date=end_date)
+        return Response(commission_data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['Marketing & Sales Targets'],
         summary='Get Specific MPO Performance Scorecard (Admin / Manager)',
         description='Returns comprehensive performance metrics, target achievement, and dual-shift attendance records for a specific MPO.',
         parameters=[

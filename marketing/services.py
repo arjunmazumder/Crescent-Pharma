@@ -240,6 +240,7 @@ class TargetService:
         # Aggregate totals across active/evaluated targets
         grand_target_amt = sum(Decimal(str(tc['totalTargetAmount'])) for tc in target_cards)
         grand_achieved_amt = sum(Decimal(str(tc['totalAchievedAmount'])) for tc in target_cards)
+        grand_commission_amt = sum(Decimal(str(tc['incentiveEvaluation']['potentialCommissionAmount'])) for tc in target_cards)
         grand_pct = ((grand_achieved_amt / grand_target_amt) * Decimal('100.0')).quantize(Decimal('0.01')) if grand_target_amt > 0 else Decimal('0.00')
 
         return {
@@ -253,7 +254,38 @@ class TargetService:
             'totalTargetRevenue': str(grand_target_amt),
             'totalAchievedRevenue': str(grand_achieved_amt),
             'overallAchievementPercentage': float(grand_pct),
+            'totalEarnedCommission': str(grand_commission_amt),
             'targets': target_cards
+        }
+
+    @staticmethod
+    def get_mpo_commission_summary(user, start_date=None, end_date=None):
+        """
+        Builds a focused commission earnings breakdown for the MPO dashboard card.
+        """
+        scorecard = TargetService.get_mpo_scorecard(user=user, start_date=start_date, end_date=end_date)
+        commission_breakdown = []
+        for t in scorecard['targets']:
+            commission_breakdown.append({
+                'targetId': t['targetId'],
+                'title': t['title'],
+                'targetAmount': t['totalTargetAmount'],
+                'achievedAmount': t['totalAchievedAmount'],
+                'achievementPercentage': t['amountAchievementPercentage'],
+                'incentiveTier': t['incentiveEvaluation']['incentiveTier'],
+                'commissionRatePercentage': t['incentiveEvaluation']['commissionRatePercentage'],
+                'earnedCommissionAmount': t['incentiveEvaluation']['potentialCommissionAmount'],
+                'isAchieved': t['incentiveEvaluation']['isAchieved']
+            })
+        return {
+            'mpoId': user.id,
+            'employeeName': f"{user.first_name} {user.last_name}".strip() or user.username,
+            'employeeId': getattr(user, 'employee_id', ''),
+            'totalTargetRevenue': scorecard['totalTargetRevenue'],
+            'totalAchievedRevenue': scorecard['totalAchievedRevenue'],
+            'overallAchievementPercentage': scorecard['overallAchievementPercentage'],
+            'totalEarnedCommission': scorecard['totalEarnedCommission'],
+            'commissionBreakdown': commission_breakdown
         }
 
     @staticmethod

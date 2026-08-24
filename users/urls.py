@@ -4,6 +4,7 @@ from users.views import UserViewSet, CustomTokenObtainPairView, CustomTokenRefre
 
 router = DefaultRouter()
 router.register(r'employees', UserViewSet, basename='employees')
+router.register(r'users', UserViewSet, basename='users')
 
 urlpatterns = [
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
