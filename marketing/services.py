@@ -339,3 +339,235 @@ class TargetService:
             'topPerformer': leaderboard[0]['username'] if leaderboard else None,
             'leaderboard': leaderboard
         }
+
+
+# -----------------------------------------------------------------------------
+# 2. SampleDistributionService (Physician Free Samples)
+# -----------------------------------------------------------------------------
+
+class SampleDistributionService:
+    @staticmethod
+    def create_distribution(
+        doctor,
+        mpo,
+        items_data,
+        source_warehouse=None,
+        distribution_date=None,
+        notes=""
+    ):
+        """
+        Creates a DoctorSampleDistribution record with nested DoctorSampleItems.
+        If source_warehouse is provided, automatically deducts physical promotional
+        inventory stock via InventoryService.record_stock_movement (movement_type='OUT').
+        """
+        from django.db import transaction
+        from inventory.models import Product, Warehouse
+        from inventory.services import InventoryService
+        from marketing.models import DoctorSampleDistribution, DoctorSampleItem
+
+        if not doctor.is_active:
+            raise ValueError(f"Cannot distribute samples: Doctor '{doctor.name}' is inactive.")
+
+        if not items_data:
+            raise ValueError("At least one sample medicine item must be provided.")
+
+        with transaction.atomic():
+            dist = DoctorSampleDistribution.objects.create(
+                doctor=doctor,
+                mpo=mpo,
+                source_warehouse=source_warehouse,
+                distribution_date=distribution_date or datetime.date.today(),
+                notes=notes or ""
+            )
+
+            total_items = 0
+            for item in items_data:
+                product_id = item.get('product_id') or item.get('productId')
+                batch_number = item.get('batch_number') or item.get('batchNumber') or ""
+                quantity = int(item.get('quantity', 1))
+                unit = item.get('unit', 'Strips')
+
+                if quantity <= 0:
+                    raise ValueError("Sample quantity must be greater than zero.")
+
+                try:
+                    product = Product.objects.get(id=product_id, is_active=True)
+                except Product.DoesNotExist:
+                    raise ValueError(f"Product with ID {product_id} not found or inactive.")
+
+                # Deduct promotional stock if warehouse is specified
+                if source_warehouse:
+                    InventoryService.record_stock_movement(
+                        product=product,
+                        warehouse=source_warehouse,
+                        batch_number=batch_number,
+                        movement_type='OUT',
+                        quantity=quantity,
+                        reference_no=dist.distribution_number,
+                        notes=f"Physician Sample issued to Dr. {doctor.name} ({doctor.specialty})",
+                        user=mpo
+                    )
+
+                DoctorSampleItem.objects.create(
+                    distribution=dist,
+                    product=product,
+                    batch_number=batch_number,
+                    quantity=quantity,
+                    unit=unit
+                )
+                total_items += quantity
+
+            dist.total_items_count = total_items
+            dist.save(update_fields=['total_items_count'])
+
+            return dist
+
+
+# -----------------------------------------------------------------------------
+# 3. ClosingSheetService (Daily Sales + Collections Running Balance Engine)
+# -----------------------------------------------------------------------------
+
+class ClosingSheetService:
+    @staticmethod
+    def get_mpo_closing_sheet(user, month=None, year=None):
+        """
+        Compiles a comprehensive day-by-day chronological sales & collections closing sheet
+        for a given Marketing Officer (MPO) in a selected month & year.
+        - Daily Sales Invoices: CustomerOrder (ORD-*) created by MPO
+        - Daily Collections: PaymentRecord (MR-*) collected by MPO
+        - Running cumulative balances (Cumulative Sales, Cumulative Collections, Running Due)
+        - Monthly summary metrics (Total Sales, Total Collections, Total Market Due, Total Invoices, Total Receipts)
+        """
+        import calendar
+        from sales.models import CustomerOrder
+        from accounting.models import PaymentRecord
+
+        today = datetime.date.today()
+        month = int(month or today.month)
+        year = int(year or today.year)
+
+        _, num_days = calendar.monthrange(year, month)
+        start_date = datetime.date(year, month, 1)
+        end_date = datetime.date(year, month, num_days)
+
+        # 1. Fetch MPO's orders in this month
+        orders = CustomerOrder.objects.filter(
+            created_by=user,
+            order_date__gte=start_date,
+            order_date__lte=end_date
+        ).select_related('customer').order_by('order_date', 'id')
+
+        # Group orders by date
+        orders_by_date = {}
+        total_monthly_sales = Decimal('0.00')
+        total_invoices_count = 0
+
+        for order in orders:
+            d_key = order.order_date
+            if d_key not in orders_by_date:
+                orders_by_date[d_key] = []
+
+            amt = Decimal(str(order.total_amount))
+            total_monthly_sales += amt
+            total_invoices_count += 1
+
+            orders_by_date[d_key].append({
+                'id': order.id,
+                'orderNumber': order.order_number,
+                'customerId': order.customer_id,
+                'customerName': order.customer.name,
+                'subtotal': str(order.subtotal),
+                'discountAmount': str((Decimal(str(order.subtotal)) * (order.discount_percentage / Decimal('100.0')) + order.discount_flat).quantize(Decimal('0.01'))),
+                'taxAmount': str(order.tax_amount),
+                'totalAmount': str(order.total_amount),
+                'paidAmount': str(order.paid_amount),
+                'status': order.status,
+                'paymentStatus': order.payment_status,
+                'isBranchBooking': order.is_branch_booking
+            })
+
+        # 2. Fetch MPO's payment collections in this month
+        payments = PaymentRecord.objects.filter(
+            created_by=user,
+            payment_date__gte=start_date,
+            payment_date__lte=end_date
+        ).order_by('payment_date', 'id')
+
+        payments_by_date = {}
+        total_monthly_collections = Decimal('0.00')
+        total_receipts_count = 0
+
+        for pay in payments:
+            d_key = pay.payment_date
+            if d_key not in payments_by_date:
+                payments_by_date[d_key] = []
+
+            p_amt = Decimal(str(pay.amount))
+            total_monthly_collections += p_amt
+            total_receipts_count += 1
+
+            payments_by_date[d_key].append({
+                'id': pay.id,
+                'receiptNo': pay.receipt_no,
+                'paymentType': pay.payment_type,
+                'partyType': pay.party_type,
+                'partyId': pay.party_id,
+                'amount': str(pay.amount),
+                'paymentMethod': pay.payment_method,
+                'referenceNo': pay.reference_no,
+                'notes': pay.notes
+            })
+
+        # 3. Build Daily Chronological Timeline
+        daily_entries = []
+        cumulative_sales = Decimal('0.00')
+        cumulative_collections = Decimal('0.00')
+
+        for day in range(1, num_days + 1):
+            curr_date = datetime.date(year, month, day)
+            day_orders = orders_by_date.get(curr_date, [])
+            day_payments = payments_by_date.get(curr_date, [])
+
+            day_sales = sum((Decimal(str(o['totalAmount'])) for o in day_orders), Decimal('0.00'))
+            day_coll = sum((Decimal(str(p['amount'])) for p in day_payments), Decimal('0.00'))
+
+            cumulative_sales += day_sales
+            cumulative_collections += day_coll
+            running_due = cumulative_sales - cumulative_collections
+
+            daily_entries.append({
+                'date': curr_date.strftime('%Y-%m-%d'),
+                'dayName': curr_date.strftime('%A'),
+                'dayNumber': day,
+                'dailySalesAmount': str(day_sales.quantize(Decimal('0.01'))),
+                'dailyCollectionsAmount': str(day_coll.quantize(Decimal('0.01'))),
+                'cumulativeSalesAmount': str(cumulative_sales.quantize(Decimal('0.01'))),
+                'cumulativeCollectionsAmount': str(cumulative_collections.quantize(Decimal('0.01'))),
+                'runningOutstandingBalance': str(running_due.quantize(Decimal('0.01'))),
+                'invoicesCount': len(day_orders),
+                'receiptsCount': len(day_payments),
+                'invoices': day_orders,
+                'collections': day_payments
+            })
+
+        total_market_due = (total_monthly_sales - total_monthly_collections).quantize(Decimal('0.01'))
+
+        return {
+            'mpoId': user.id,
+            'mpoUsername': user.username,
+            'mpoFullName': user.get_full_name() or user.username,
+            'employeeId': getattr(user, 'employee_id', None) or f"EMP-{user.id:04d}",
+            'month': month,
+            'monthName': datetime.date(year, month, 1).strftime('%B'),
+            'year': year,
+            'summary': {
+                'totalMonthlySales': str(total_monthly_sales.quantize(Decimal('0.01'))),
+                'totalMonthlyCollections': str(total_monthly_collections.quantize(Decimal('0.01'))),
+                'totalMarketDue': str(total_market_due),
+                'totalInvoicesCount': total_invoices_count,
+                'totalReceiptsCount': total_receipts_count,
+                'collectionEfficiencyPercentage': float(((total_monthly_collections / total_monthly_sales) * Decimal('100.0')).quantize(Decimal('0.01'))) if total_monthly_sales > 0 else 0.0
+            },
+            'dailyTimeline': daily_entries
+        }
+

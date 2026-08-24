@@ -90,6 +90,7 @@ class CustomerOrderItemCreateSerializer(serializers.Serializer):
 
 class CustomerOrderSerializer(serializers.ModelSerializer):
     customer = SimpleCustomerSerializer(read_only=True)
+    delivery_branch = SimpleWarehouseSerializer(read_only=True)
     items = CustomerOrderItemSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     items_count = serializers.SerializerMethodField(read_only=True)
@@ -112,6 +113,10 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
             'total_amount',
             'paid_amount',
             'shipping_address',
+            'is_branch_booking',
+            'delivery_branch',
+            'booking_reference_number',
+            'booking_notes',
             'notes',
             'cancellation_reason',
             'created_by_username',
@@ -120,7 +125,7 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         )
-        read_only_fields = ('order_number', 'subtotal', 'tax_amount', 'total_amount', 'created_at', 'updated_at')
+        read_only_fields = ('order_number', 'booking_reference_number', 'subtotal', 'tax_amount', 'total_amount', 'created_at', 'updated_at')
 
     def get_items_count(self, obj):
         return obj.items.count()
@@ -134,6 +139,9 @@ class CustomerOrderCreateSerializer(serializers.Serializer):
     discount_flat = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=0.00, help_text='Overall order discount flat amount')
     payment_method = serializers.ChoiceField(choices=PaymentMethod.choices, required=False, default=PaymentMethod.CASH, help_text='Payment method (CASH, BANK_TRANSFER, CHEQUE, BKASH, NAGAD)')
     shipping_address = serializers.CharField(required=False, allow_blank=True, help_text='Delivery / Pharmacy branch address')
+    is_branch_booking = serializers.BooleanField(required=False, default=False, help_text='True if booking for fulfillment by another branch / depot')
+    delivery_branch_id = serializers.IntegerField(required=False, allow_null=True, help_text='Destination branch warehouse ID')
+    booking_notes = serializers.CharField(required=False, allow_blank=True, help_text='Special instructions for destination branch')
     notes = serializers.CharField(required=False, allow_blank=True, help_text='Special delivery instructions')
     items = CustomerOrderItemCreateSerializer(many=True, help_text='List of ordered products, batches, and quantities')
 
@@ -147,7 +155,10 @@ class CustomerOrderCreateSerializer(serializers.Serializer):
                 'discountPercentage': 'discount_percentage',
                 'discountFlat': 'discount_flat',
                 'paymentMethod': 'payment_method',
-                'shippingAddress': 'shipping_address'
+                'shippingAddress': 'shipping_address',
+                'isBranchBooking': 'is_branch_booking',
+                'deliveryBranchId': 'delivery_branch_id',
+                'bookingNotes': 'booking_notes'
             }
             for camel, snake in mapping.items():
                 if camel in data and snake not in data:

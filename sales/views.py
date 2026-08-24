@@ -52,7 +52,7 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
     search_fields = ['order_number', 'customer__name', 'customer__customer_code', 'notes', 'shipping_address']
-    filterset_fields = ['customer', 'status', 'payment_status', 'payment_method', 'order_date', 'created_by']
+    filterset_fields = ['customer', 'status', 'payment_status', 'payment_method', 'order_date', 'created_by', 'is_branch_booking', 'delivery_branch']
     ordering_fields = ['id', 'order_number', 'order_date', 'total_amount', 'created_at']
     ordering = ['-id']
 
@@ -68,7 +68,20 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['get'], url_path='my-orders')
     def my_orders(self, request):
-        orders_qs = self.queryset.filter(created_by=request.user)
+        orders_qs = CustomerOrder.objects.filter(created_by=request.user).select_related('customer', 'delivery_branch', 'created_by').prefetch_related('items__product', 'items__warehouse').order_by('-id')
+        is_branch = request.query_params.get('is_branch_booking') or request.query_params.get('isBranchBooking')
+        if is_branch is not None:
+            orders_qs = orders_qs.filter(is_branch_booking=str(is_branch).lower() in ['true', '1'])
+        status_param = request.query_params.get('status')
+        if status_param:
+            orders_qs = orders_qs.filter(status=status_param)
+        pay_status = request.query_params.get('payment_status') or request.query_params.get('paymentStatus')
+        if pay_status:
+            orders_qs = orders_qs.filter(payment_status=pay_status)
+        order_date_param = request.query_params.get('order_date') or request.query_params.get('orderDate')
+        if order_date_param:
+            orders_qs = orders_qs.filter(order_date=order_date_param)
+
         page = self.paginate_queryset(orders_qs)
         if page is not None:
             serializer = CustomerOrderSerializer(page, many=True)
@@ -79,7 +92,7 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
     @extend_schema(
         tags=['Customers & Sales Orders'],
         summary='Create Customer Order (with multi-item products & automated billing)',
-        description='Creates a customer sales order with multi-item products, automatic VAT & discount math, and compliance checks.',
+        description='Creates a customer sales order with multi-item products, automatic VAT & discount math, compliance checks, and optional branch booking.',
         request=CustomerOrderCreateSerializer,
         responses={201: CustomerOrderSerializer}
     )
@@ -91,6 +104,11 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
         data = serializer.validated_data
         try:
             customer = Customer.objects.get(id=data['customer_id'])
+            delivery_branch = None
+            if data.get('delivery_branch_id'):
+                from inventory.models import Warehouse
+                delivery_branch = Warehouse.objects.get(id=data['delivery_branch_id'], is_active=True)
+
             order = OrderService.create_order(
                 customer=customer,
                 items_data=data['items'],
@@ -101,6 +119,9 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
                 discount_flat=data.get('discount_flat', 0),
                 payment_method=data.get('payment_method', PaymentMethod.CASH),
                 shipping_address=data.get('shipping_address', ''),
+                is_branch_booking=data.get('is_branch_booking', False),
+                delivery_branch=delivery_branch,
+                booking_notes=data.get('booking_notes', ''),
                 notes=data.get('notes', '')
             )
             return Response(CustomerOrderSerializer(order).data, status=status.HTTP_201_CREATED)

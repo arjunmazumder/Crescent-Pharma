@@ -138,6 +138,29 @@ class CustomerOrder(models.Model):
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     shipping_address = models.TextField(null=True, blank=True)
+    is_branch_booking = models.BooleanField(
+        default=False,
+        help_text="Designates whether this order is booked for fulfillment by another branch / depot"
+    )
+    delivery_branch = models.ForeignKey(
+        'inventory.Warehouse',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='branch_booked_orders',
+        help_text="Destination branch office / warehouse responsible for dispatch"
+    )
+    booking_reference_number = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        help_text="Inter-branch booking tracking code (e.g. BKG-2026-0001)"
+    )
+    booking_notes = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Special instructions for the destination branch dispatch team"
+    )
     notes = models.TextField(null=True, blank=True)
     cancellation_reason = models.TextField(
         null=True,
@@ -162,8 +185,8 @@ class CustomerOrder(models.Model):
         return f"{self.order_number or 'Draft'} - {self.customer.name} [{self.status}]"
 
     def save(self, *args, **kwargs):
+        year = timezone.now().year
         if not self.order_number:
-            year = timezone.now().year
             with transaction.atomic():
                 prefix = f"ORD-{year}-"
                 last_order = CustomerOrder.objects.select_for_update().filter(order_number__startswith=prefix).order_by('-id').first()
@@ -181,6 +204,26 @@ class CustomerOrder(models.Model):
                     next_number += 1
                     candidate_num = f"{prefix}{next_number:04d}"
                 self.order_number = candidate_num
+
+        if self.is_branch_booking and not self.booking_reference_number:
+            with transaction.atomic():
+                prefix = f"BKG-{year}-"
+                last_bkg = CustomerOrder.objects.select_for_update().filter(booking_reference_number__startswith=prefix).order_by('-id').first()
+                max_num = 0
+                if last_bkg:
+                    for o in CustomerOrder.objects.filter(booking_reference_number__startswith=prefix):
+                        match = re.search(r'BKG-\d+-(\d+)', o.booking_reference_number)
+                        if match:
+                            num = int(match.group(1))
+                            if num > max_num:
+                                max_num = num
+                next_number = max_num + 1
+                candidate_bkg = f"{prefix}{next_number:04d}"
+                while CustomerOrder.objects.filter(booking_reference_number=candidate_bkg).exclude(pk=self.pk).exists():
+                    next_number += 1
+                    candidate_bkg = f"{prefix}{next_number:04d}"
+                self.booking_reference_number = candidate_bkg
+
         super().save(*args, **kwargs)
 
 

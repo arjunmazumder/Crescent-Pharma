@@ -91,3 +91,134 @@ class SalesTargetCreateSerializer(serializers.Serializer):
         if start_date and end_date and start_date > end_date:
             raise serializers.ValidationError({"end_date": "End date must be on or after start date."})
         return attrs
+
+
+# -----------------------------------------------------------------------------
+# Doctor & Sample Distribution Serializers
+# -----------------------------------------------------------------------------
+
+from marketing.models import Doctor, DoctorSampleDistribution, DoctorSampleItem, VisitingShift
+from inventory.serializers import SimpleProductSerializer, SimpleWarehouseSerializer
+
+
+class DoctorSerializer(serializers.ModelSerializer):
+    assigned_mpo_details = SimpleUserSerializer(source='assigned_mpo', read_only=True)
+    total_distributions = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = Doctor
+        fields = (
+            'id',
+            'doctor_code',
+            'name',
+            'degrees',
+            'specialty',
+            'bmdc_reg_number',
+            'chamber_or_hospital_name',
+            'address',
+            'territory_name',
+            'phone',
+            'email',
+            'visiting_shift',
+            'assigned_mpo',
+            'assigned_mpo_details',
+            'is_active',
+            'total_distributions',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = ('doctor_code', 'created_at', 'updated_at')
+
+    def get_total_distributions(self, obj):
+        return obj.sample_distributions.count()
+
+
+class DoctorSampleItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_unique_id = serializers.CharField(source='product.unique_id', read_only=True)
+
+    class Meta:
+        model = DoctorSampleItem
+        fields = (
+            'id',
+            'product',
+            'product_name',
+            'product_unique_id',
+            'batch_number',
+            'quantity',
+            'unit',
+        )
+
+
+class DoctorSampleDistributionSerializer(serializers.ModelSerializer):
+    doctor_name = serializers.CharField(source='doctor.name', read_only=True)
+    doctor_code = serializers.CharField(source='doctor.doctor_code', read_only=True)
+    doctor_specialty = serializers.CharField(source='doctor.specialty', read_only=True)
+    doctor_chamber = serializers.CharField(source='doctor.chamber_or_hospital_name', read_only=True)
+    mpo_username = serializers.CharField(source='mpo.username', read_only=True)
+    source_warehouse_name = serializers.CharField(source='source_warehouse.name', read_only=True)
+    items = DoctorSampleItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = DoctorSampleDistribution
+        fields = (
+            'id',
+            'distribution_number',
+            'doctor',
+            'doctor_code',
+            'doctor_name',
+            'doctor_specialty',
+            'doctor_chamber',
+            'mpo',
+            'mpo_username',
+            'source_warehouse',
+            'source_warehouse_name',
+            'distribution_date',
+            'total_items_count',
+            'notes',
+            'items',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = ('distribution_number', 'total_items_count', 'created_at', 'updated_at')
+
+
+class DoctorSampleItemInputSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField(help_text="Product / Medicine ID")
+    batch_number = serializers.CharField(max_length=100, required=False, allow_blank=True, default="", help_text="Batch Number")
+    quantity = serializers.IntegerField(min_value=1, default=1, help_text="Quantity distributed")
+    unit = serializers.CharField(max_length=50, required=False, default="Strips", help_text="Unit (e.g. Strips, Boxes)")
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'productId': 'product_id',
+                'batchNumber': 'batch_number'
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+
+class DoctorSampleDistributionCreateSerializer(serializers.Serializer):
+    doctor_id = serializers.IntegerField(help_text="Doctor ID")
+    source_warehouse_id = serializers.IntegerField(required=False, allow_null=True, help_text="Warehouse ID from which samples are issued")
+    distribution_date = serializers.DateField(required=False, help_text="Distribution Date (YYYY-MM-DD)")
+    notes = serializers.CharField(required=False, allow_blank=True, default="", help_text="Visit notes / feedback")
+    items = DoctorSampleItemInputSerializer(many=True, help_text="List of sample items")
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'doctorId': 'doctor_id',
+                'sourceWarehouseId': 'source_warehouse_id',
+                'distributionDate': 'distribution_date'
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+

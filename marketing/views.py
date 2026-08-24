@@ -198,3 +198,145 @@ class MarketingReportViewSet(viewsets.ViewSet):
         report = TargetService.get_consolidated_team_report(start_date=start_date, end_date=end_date, period_type=period_type)
         return Response(report, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        tags=['Marketing & Sales Targets'],
+        summary='Get Logged-in MPO Monthly Closing Sheet',
+        description='Returns daily timeline of invoices and payment receipts with running balances and month-to-date summary totals.',
+        parameters=[
+            OpenApiParameter(name='month', type=int, location=OpenApiParameter.QUERY, description='Target month (1-12, defaults to current month)', required=False),
+            OpenApiParameter(name='year', type=int, location=OpenApiParameter.QUERY, description='Target year (e.g. 2026, defaults to current year)', required=False),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='my-closing-sheet')
+    def my_closing_sheet(self, request):
+        from marketing.services import ClosingSheetService
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
+        sheet = ClosingSheetService.get_mpo_closing_sheet(user=request.user, month=month, year=year)
+        return Response(sheet, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['Marketing & Sales Targets'],
+        summary='Get Specific MPO Monthly Closing Sheet (Admin / Manager)',
+        description='Returns daily timeline and monthly closing sheet for a specific MPO.',
+        parameters=[
+            OpenApiParameter(name='month', type=int, location=OpenApiParameter.QUERY, description='Target month (1-12)', required=False),
+            OpenApiParameter(name='year', type=int, location=OpenApiParameter.QUERY, description='Target year', required=False),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path=r'closing-sheet/(?P<user_id>\d+)')
+    def mpo_closing_sheet(self, request, user_id=None):
+        from marketing.services import ClosingSheetService
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': f'Employee with ID {user_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user.id != target_user.id and not (request.user.is_superuser or request.user.is_staff):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
+        sheet = ClosingSheetService.get_mpo_closing_sheet(user=target_user, month=month, year=year)
+        return Response(sheet, status=status.HTTP_200_OK)
+
+
+# -----------------------------------------------------------------------------
+# Doctor Directory & Physician Sample Distribution ViewSets
+# -----------------------------------------------------------------------------
+
+from marketing.models import Doctor, DoctorSampleDistribution
+from marketing.serializers import (
+    DoctorSerializer,
+    DoctorSampleDistributionSerializer,
+    DoctorSampleDistributionCreateSerializer
+)
+from marketing.services import SampleDistributionService
+
+
+@extend_schema(tags=['Doctor Directory & Physician Samples'])
+class DoctorViewSet(viewsets.ModelViewSet):
+    queryset = Doctor.objects.all().select_related('assigned_mpo').prefetch_related('sample_distributions').order_by('name')
+    serializer_class = DoctorSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['name', 'doctor_code', 'chamber_or_hospital_name', 'degrees', 'specialty', 'bmdc_reg_number', 'phone', 'territory_name']
+    filterset_fields = ['specialty', 'visiting_shift', 'assigned_mpo', 'territory_name', 'is_active']
+    ordering_fields = ['id', 'name', 'doctor_code', 'created_at']
+    ordering = ['name']
+
+    def get_queryset(self):
+        qs = self.queryset.all()
+        # If regular MPO, allow seeing their assigned doctors or all active doctors
+        my_only = self.request.query_params.get('my_only')
+        if my_only and my_only.lower() in ['true', '1']:
+            qs = qs.filter(assigned_mpo=self.request.user)
+        return qs
+
+
+@extend_schema(tags=['Doctor Directory & Physician Samples'])
+class DoctorSampleDistributionViewSet(viewsets.ModelViewSet):
+    queryset = DoctorSampleDistribution.objects.all().select_related('doctor', 'mpo', 'source_warehouse').prefetch_related('items__product').order_by('-distribution_date', '-id')
+    serializer_class = DoctorSampleDistributionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['distribution_number', 'doctor__name', 'doctor__doctor_code', 'mpo__username', 'notes']
+    filterset_fields = ['doctor', 'mpo', 'source_warehouse', 'distribution_date']
+    ordering_fields = ['id', 'distribution_number', 'distribution_date', 'total_items_count', 'created_at']
+    ordering = ['-distribution_date', '-id']
+
+    def get_queryset(self):
+        if self.request.user.is_superuser or self.request.user.is_staff:
+            return self.queryset.all()
+        return self.queryset.filter(mpo=self.request.user)
+
+    @extend_schema(
+        tags=['Doctor Directory & Physician Samples'],
+        summary='Distribute Physician Samples to Doctor',
+        description='Records distribution of free medical samples to a doctor, auto-generates SMP-YYYY-XXXX number, and atomically deducts physical stock from promotional store.',
+        request=DoctorSampleDistributionCreateSerializer,
+        responses={201: DoctorSampleDistributionSerializer}
+    )
+    def create(self, request, *args, **kwargs):
+        from inventory.models import Warehouse
+        serializer = DoctorSampleDistributionCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        try:
+            doctor = Doctor.objects.get(id=data['doctor_id'])
+            source_warehouse = None
+            if data.get('source_warehouse_id'):
+                source_warehouse = Warehouse.objects.get(id=data['source_warehouse_id'], is_active=True)
+
+            dist = SampleDistributionService.create_distribution(
+                doctor=doctor,
+                mpo=request.user,
+                items_data=data['items'],
+                source_warehouse=source_warehouse,
+                distribution_date=data.get('distribution_date'),
+                notes=data.get('notes', '')
+            )
+            return Response(DoctorSampleDistributionSerializer(dist).data, status=status.HTTP_201_CREATED)
+        except Doctor.DoesNotExist:
+            return Response({'error': 'Doctor not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except Warehouse.DoesNotExist:
+            return Response({'error': 'Source warehouse not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        tags=['Doctor Directory & Physician Samples'],
+        summary="Get Logged-in MPO's Sample Distributions",
+        description="Returns all physician sample distributions completed by the authenticated marketing officer."
+    )
+    @action(detail=False, methods=['get'], url_path='my-samples')
+    def my_samples(self, request):
+        samples_qs = self.queryset.filter(mpo=request.user)
+        page = self.paginate_queryset(samples_qs)
+        if page is not None:
+            serializer = DoctorSampleDistributionSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = DoctorSampleDistributionSerializer(samples_qs, many=True)
+        return Response(serializer.data)
+
+

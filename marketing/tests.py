@@ -421,3 +421,162 @@ class MarketingManagementModuleTestCase(TestCase):
         self.assertEqual(res['incentiveEvaluation']['commissionRatePercentage'], 8.0)
         # 160,000 * 8% = 12,800 BDT
         self.assertEqual(res['incentiveEvaluation']['potentialCommissionAmount'], '12800.00')
+
+    def test_doctor_directory_and_sample_distribution(self):
+        """Tests Doctor directory auto-coding, physician sample distribution, and promotional stock depletion."""
+        from marketing.models import Doctor, DoctorSampleDistribution, DoctorSampleItem
+        from marketing.services import SampleDistributionService
+        from inventory.models import StockLevel
+
+        # 1. Create Doctor
+        doctor = Doctor.objects.create(
+            name="Prof. Dr. M. A. Karim",
+            degrees="MBBS, FCPS (Medicine)",
+            specialty="Cardiology",
+            bmdc_reg_number="BMDC-77889",
+            chamber_or_hospital_name="Popular Diagnostic Center, Dhanmondi",
+            address="House 16, Road 2, Dhanmondi, Dhaka",
+            territory_name="Dhanmondi-01",
+            phone="+8801700112233",
+            assigned_mpo=self.mpo_user
+        )
+        self.assertTrue(doctor.doctor_code.startswith("DOC-"))
+
+        # Initial stock of Product A in warehouse
+        stock_before = StockLevel.objects.get(product=self.product_a, warehouse=self.warehouse, batch_number='BATCH-2026-A1').quantity
+
+        # 2. Distribute Samples
+        sample_items = [
+            {
+                'product_id': self.product_a.id,
+                'batch_number': 'BATCH-2026-A1',
+                'quantity': 15,
+                'unit': 'Strips'
+            }
+        ]
+
+        dist = SampleDistributionService.create_distribution(
+            doctor=doctor,
+            mpo=self.mpo_user,
+            items_data=sample_items,
+            source_warehouse=self.warehouse,
+            distribution_date=datetime.date(2026, 8, 20),
+            notes="Introduced new Ciprocin 500 pack format"
+        )
+
+        self.assertTrue(dist.distribution_number.startswith("SMP-2026-"))
+        self.assertEqual(dist.total_items_count, 15)
+        self.assertEqual(dist.items.count(), 1)
+
+        # 3. Verify promotional stock decreased
+        stock_after = StockLevel.objects.get(product=self.product_a, warehouse=self.warehouse, batch_number='BATCH-2026-A1').quantity
+        self.assertEqual(stock_after, stock_before - 15)
+
+        # 4. Test REST APIs
+        self.client.force_authenticate(user=self.mpo_user)
+
+        # List Doctors
+        doc_resp = self.client.get('/api/marketing/doctors/')
+        self.assertEqual(doc_resp.status_code, status.HTTP_200_OK)
+
+        # List My Samples
+        my_samples_resp = self.client.get('/api/marketing/doctor-samples/my-samples/')
+        self.assertEqual(my_samples_resp.status_code, status.HTTP_200_OK)
+
+    def test_mpo_monthly_closing_sheet_timeline_and_running_balance(self):
+        """Tests MPO monthly closing sheet compiling daily sales + collections into cumulative running balances."""
+        from accounting.models import PaymentRecord, AccountHead, AccountType, FiscalYear, AccountingPeriod
+        from marketing.services import ClosingSheetService
+
+        today = timezone.now().date()
+        fy = FiscalYear.objects.create(
+            name="FY 2026 MKT",
+            code="FY2026MKT",
+            start_date=datetime.date(2026, 1, 1),
+            end_date=datetime.date(2026, 12, 31),
+            is_current=True
+        )
+
+        cash_head = AccountHead.objects.create(
+            name="MPO Field Cash Drawer",
+            code="1119",
+            account_type=AccountType.ASSET,
+            is_group=False,
+            is_active=True
+        )
+
+        # 1. Day 5: Sales Order 5,000 BDT
+        order_1 = OrderService.create_order(
+            customer=self.customer,
+            items_data=[{
+                'product_id': self.product_a.id,
+                'warehouse_id': self.warehouse.id,
+                'batch_number': 'BATCH-2026-A1',
+                'quantity': 20, # 20 * 250 = 5,000
+                'unit_price': '250.00',
+                'vat_percentage': '0.00',
+                'discount_percentage': '0.00'
+            }],
+            user=self.mpo_user,
+            order_date=datetime.date(2026, 8, 5)
+        )
+
+        # 2. Day 10: Collection 3,000 BDT
+        pay_1 = PaymentRecord.objects.create(
+            receipt_no="MR-2026-0001",
+            payment_type='RECEIPT',
+            party_type='CUSTOMER',
+            party_id=self.customer.id,
+            amount=Decimal('3000.00'),
+            payment_date=datetime.date(2026, 8, 10),
+            payment_method='CASH',
+            deposit_to_account=cash_head,
+            created_by=self.mpo_user,
+            notes="Collected partial payment"
+        )
+
+        # 3. Day 15: Sales Order 10,000 BDT
+        order_2 = OrderService.create_order(
+            customer=self.customer,
+            items_data=[{
+                'product_id': self.product_a.id,
+                'warehouse_id': self.warehouse.id,
+                'batch_number': 'BATCH-2026-A1',
+                'quantity': 40, # 40 * 250 = 10,000
+                'unit_price': '250.00',
+                'vat_percentage': '0.00',
+                'discount_percentage': '0.00'
+            }],
+            user=self.mpo_user,
+            order_date=datetime.date(2026, 8, 15)
+        )
+
+        # 4. Day 20: Collection 8,000 BDT
+        pay_2 = PaymentRecord.objects.create(
+            receipt_no="MR-2026-0002",
+            payment_type='RECEIPT',
+            party_type='CUSTOMER',
+            party_id=self.customer.id,
+            amount=Decimal('8000.00'),
+            payment_date=datetime.date(2026, 8, 20),
+            payment_method='BKASH',
+            deposit_to_account=cash_head,
+            created_by=self.mpo_user,
+            notes="Collected via bKash"
+        )
+
+        # 5. Evaluate Closing Sheet
+        sheet = ClosingSheetService.get_mpo_closing_sheet(user=self.mpo_user, month=8, year=2026)
+
+        self.assertEqual(sheet['summary']['totalMonthlySales'], '15000.00')
+        self.assertEqual(sheet['summary']['totalMonthlyCollections'], '11000.00')
+        self.assertEqual(sheet['summary']['totalMarketDue'], '4000.00')
+        self.assertEqual(sheet['summary']['totalInvoicesCount'], 2)
+        self.assertEqual(sheet['summary']['totalReceiptsCount'], 2)
+
+        # 6. Test API Endpoint
+        self.client.force_authenticate(user=self.mpo_user)
+        api_resp = self.client.get('/api/marketing/reports/my-closing-sheet/?month=8&year=2026')
+        self.assertEqual(api_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(api_resp.data['summary']['totalMonthlySales'], '15000.00')
+

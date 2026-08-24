@@ -254,3 +254,67 @@ class SalesModuleTestCase(TestCase):
         self.assertEqual(self.stock_level.reserved_quantity, 0)
         self.assertEqual(self.stock_level.available_quantity, 75)
 
+    def test_product_booking_for_other_branches(self):
+        """Tests booking orders for fulfillment by another branch / depot with BKG-YYYY-XXXX generation."""
+        # 1. Create a second regional depot/branch
+        sylhet_branch = Warehouse.objects.create(
+            name='Sylhet Regional Depot',
+            code='WH-SYL-01'
+        )
+
+        # Receive 50 boxes in Sylhet depot
+        InventoryService.record_stock_movement(
+            product=self.product,
+            warehouse=sylhet_branch,
+            batch_number='BATCH-SYL-01',
+            movement_type='IN',
+            quantity=50,
+            user=self.user
+        )
+
+        # 2. Book order destined for Sylhet branch
+        items_data = [
+            {
+                'product_id': self.product.id,
+                'batch_number': 'BATCH-SYL-01',
+                'quantity': 15,
+                'unit_price': '250.00'
+            }
+        ]
+
+        order = OrderService.create_order(
+            customer=self.customer,
+            items_data=items_data,
+            user=self.user,
+            is_branch_booking=True,
+            delivery_branch=sylhet_branch,
+            booking_notes="Deliver to Sylhet Medical College Pharmacy",
+            payment_method=PaymentMethod.CASH
+        )
+
+        self.assertTrue(order.is_branch_booking)
+        self.assertEqual(order.delivery_branch, sylhet_branch)
+        self.assertTrue(order.booking_reference_number.startswith("BKG-2026-"))
+        self.assertEqual(order.booking_notes, "Deliver to Sylhet Medical College Pharmacy")
+        self.assertEqual(order.created_by, self.user)
+        self.assertEqual(CustomerOrder.objects.filter(created_by=self.user, is_branch_booking=True).count(), 1)
+
+        # 3. Test REST API filtering
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get('/api/customer-orders/my-orders/?is_branch_booking=true')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        if isinstance(resp.data, list):
+            items = resp.data
+        elif isinstance(resp.data, dict) and 'results' in resp.data:
+            items = resp.data['results']
+        elif isinstance(resp.data, dict) and 'data' in resp.data:
+            items = resp.data['data'] if isinstance(resp.data['data'], list) else [resp.data['data']]
+        elif isinstance(resp.data, dict):
+            items = [resp.data]
+        else:
+            items = []
+
+        self.assertTrue(len(items) > 0)
+        self.assertTrue(any(o.get('id') == order.id for o in items if isinstance(o, dict)))
+
+

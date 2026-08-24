@@ -18,11 +18,14 @@ class OrderService:
         discount_flat=Decimal('0.00'),
         payment_method=PaymentMethod.CASH,
         shipping_address="",
+        is_branch_booking=False,
+        delivery_branch=None,
+        booking_notes="",
         notes=""
     ):
         """
         Creates a new CustomerOrder with nested CustomerOrderItems, performing
-        compliance checks, drug license validation, and financial calculations.
+        compliance checks, drug license validation, inter-branch booking routing, and financial calculations.
         """
         # 1. Customer active check
         if not customer.is_active:
@@ -53,6 +56,9 @@ class OrderService:
                 discount_percentage=discount_percentage,
                 discount_flat=discount_flat,
                 shipping_address=shipping_address or customer.address or "",
+                is_branch_booking=is_branch_booking,
+                delivery_branch=delivery_branch,
+                booking_notes=booking_notes or "",
                 notes=notes or "",
                 created_by=user
             )
@@ -75,6 +81,8 @@ class OrderService:
                         warehouse = Warehouse.objects.get(id=warehouse_id, is_active=True)
                     except Warehouse.DoesNotExist:
                         raise ValueError(f"Warehouse with ID {warehouse_id} not found or inactive.")
+                elif is_branch_booking and delivery_branch:
+                    warehouse = delivery_branch
 
                 batch_number = item_dict.get('batch_number') or item_dict.get('batchNumber') or ''
                 quantity = int(item_dict.get('quantity', 1))
