@@ -667,6 +667,7 @@ class TrackingViewSet(viewsets.ViewSet):
             user=request.user,
             latitude=data['latitude'],
             longitude=data['longitude'],
+            location_name=data.get('location_name'),
             accuracy=data.get('accuracy'),
             speed=data.get('speed'),
             battery_level=data.get('battery_level'),

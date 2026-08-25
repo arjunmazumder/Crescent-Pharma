@@ -270,6 +270,7 @@ class UserLocationLog(models.Model):
     )
     latitude = models.DecimalField(max_digits=10, decimal_places=7)
     longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    location_name = models.CharField(max_length=255, null=True, blank=True, help_text="Human-readable reverse geocoded place name")
     accuracy = models.FloatField(null=True, blank=True, help_text="Accuracy radius in meters")
     speed = models.FloatField(null=True, blank=True, help_text="Movement speed in m/s")
     battery_level = models.IntegerField(null=True, blank=True, help_text="Device battery percentage")
@@ -285,7 +286,7 @@ class UserLocationLog(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user.username} @ ({self.latitude}, {self.longitude}) at {self.recorded_at}"
+        return f"{self.user.username} @ ({self.latitude}, {self.longitude}) [{self.location_name or 'Unknown'}] at {self.recorded_at}"
 
 
 class UserCurrentLocation(models.Model):
@@ -296,6 +297,7 @@ class UserCurrentLocation(models.Model):
     )
     latitude = models.DecimalField(max_digits=10, decimal_places=7)
     longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    location_name = models.CharField(max_length=255, null=True, blank=True, help_text="Human-readable reverse geocoded place name")
     accuracy = models.FloatField(null=True, blank=True)
     speed = models.FloatField(null=True, blank=True)
     battery_level = models.IntegerField(null=True, blank=True)
@@ -307,5 +309,6 @@ class UserCurrentLocation(models.Model):
 
     def __str__(self):
         status_str = "ACTIVE" if self.is_tracking_active else "STOPPED"
-        return f"{self.user.username} - {status_str} @ ({self.latitude}, {self.longitude})"
+        return f"{self.user.username} - {status_str} @ ({self.latitude}, {self.longitude}) [{self.location_name or 'Unknown'}]"
+
 

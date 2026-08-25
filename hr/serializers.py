@@ -163,6 +163,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
 class UserLocationPingSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
     longitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    location_name = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
     accuracy = serializers.FloatField(required=False, allow_null=True)
     speed = serializers.FloatField(required=False, allow_null=True)
     battery_level = serializers.IntegerField(required=False, allow_null=True)
@@ -173,6 +174,7 @@ class UserLocationPingSerializer(serializers.Serializer):
         if isinstance(data, dict):
             data = data.copy()
             mapping = {
+                'locationName': 'location_name',
                 'batteryLevel': 'battery_level',
                 'isMockLocation': 'is_mock_location',
                 'recordedAt': 'recorded_at',
@@ -189,6 +191,7 @@ class UserLocationPingSerializer(serializers.Serializer):
 class LocationPointSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
     longitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    location_name = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
     accuracy = serializers.FloatField(required=False, allow_null=True)
     speed = serializers.FloatField(required=False, allow_null=True)
     battery_level = serializers.IntegerField(required=False, allow_null=True)
@@ -199,6 +202,7 @@ class LocationPointSerializer(serializers.Serializer):
         if isinstance(data, dict):
             data = data.copy()
             mapping = {
+                'locationName': 'location_name',
                 'batteryLevel': 'battery_level',
                 'isMockLocation': 'is_mock_location',
                 'recordedAt': 'recorded_at',
@@ -233,6 +237,7 @@ class UserCurrentLocationSerializer(serializers.ModelSerializer):
             'role_name',
             'latitude',
             'longitude',
+            'location_name',
             'accuracy',
             'speed',
             'battery_level',
@@ -250,4 +255,5 @@ class UserLocationLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserLocationLog
         fields = '__all__'
+
 

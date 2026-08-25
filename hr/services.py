@@ -373,6 +373,7 @@ class TrackingService:
         user,
         latitude,
         longitude,
+        location_name=None,
         accuracy=None,
         speed=None,
         battery_level=None,
@@ -387,6 +388,9 @@ class TrackingService:
         now = timezone.now()
         timestamp = recorded_at or now
 
+        # Reverse geocode place name if not provided
+        resolved_location_name = location_name or reverse_geocode_coordinates(latitude, longitude)
+
         with transaction.atomic():
             # 1. Update or create Current Live Location
             current_loc, _ = UserCurrentLocation.objects.update_or_create(
@@ -394,6 +398,7 @@ class TrackingService:
                 defaults={
                     'latitude': latitude,
                     'longitude': longitude,
+                    'location_name': resolved_location_name,
                     'accuracy': accuracy,
                     'speed': speed,
                     'battery_level': battery_level,
@@ -406,6 +411,7 @@ class TrackingService:
                 user=user,
                 latitude=latitude,
                 longitude=longitude,
+                location_name=resolved_location_name,
                 accuracy=accuracy,
                 speed=speed,
                 battery_level=battery_level,
@@ -429,6 +435,7 @@ class TrackingService:
             for item in locations_data:
                 lat = item.get('latitude') or item.get('lat')
                 lon = item.get('longitude') or item.get('lon') or item.get('lng')
+                loc_name = item.get('location_name') or item.get('locationName')
                 acc = item.get('accuracy')
                 spd = item.get('speed')
                 bat = item.get('battery_level') or item.get('batteryLevel')
@@ -439,6 +446,7 @@ class TrackingService:
                     user=user,
                     latitude=lat,
                     longitude=lon,
+                    location_name=loc_name,
                     accuracy=acc,
                     speed=spd,
                     battery_level=bat,
@@ -446,21 +454,23 @@ class TrackingService:
                     recorded_at=rec
                 )
                 logs_to_create.append(log_entry)
-                latest_loc = (lat, lon, acc, spd, bat)
+                latest_loc = (lat, lon, loc_name, acc, spd, bat)
 
             if logs_to_create:
                 UserLocationLog.objects.bulk_create(logs_to_create)
 
             # Update latest known current location if available
             if latest_loc:
+                resolved_name = latest_loc[2] or reverse_geocode_coordinates(latest_loc[0], latest_loc[1])
                 UserCurrentLocation.objects.update_or_create(
                     user=user,
                     defaults={
                         'latitude': latest_loc[0],
                         'longitude': latest_loc[1],
-                        'accuracy': latest_loc[2],
-                        'speed': latest_loc[3],
-                        'battery_level': latest_loc[4],
+                        'location_name': resolved_name,
+                        'accuracy': latest_loc[3],
+                        'speed': latest_loc[4],
+                        'battery_level': latest_loc[5],
                         'is_tracking_active': True
                     }
                 )
@@ -479,6 +489,7 @@ class TrackingService:
             defaults={
                 'latitude': Decimal('23.8103310'),
                 'longitude': Decimal('90.4125210'),
+                'location_name': 'Dhaka Head Office',
                 'is_tracking_active': False
             }
         )
@@ -497,6 +508,7 @@ class TrackingService:
         """
         Retrieves the chronological GPS breadcrumb points for an MPO on a specific date.
         Calculates total distance travelled in Kilometers using Haversine algorithm.
+        Includes human-readable reverse-geocoded locationName for each point.
         """
         import math
         from hr.models import UserLocationLog
@@ -530,10 +542,21 @@ class TrackingService:
 
             prev_point = (lat, lon)
 
+            loc_name = log.location_name
+            if not loc_name:
+                loc_name = reverse_geocode_coordinates(log.latitude, log.longitude)
+                if loc_name:
+                    try:
+                        log.location_name = loc_name
+                        log.save(update_fields=['location_name'])
+                    except Exception:
+                        pass
+
             points.append({
                 'id': log.id,
                 'latitude': str(log.latitude),
                 'longitude': str(log.longitude),
+                'locationName': loc_name or f"({log.latitude}, {log.longitude})",
                 'accuracy': log.accuracy,
                 'speed': log.speed,
                 'batteryLevel': log.battery_level,
@@ -561,6 +584,7 @@ class TrackingService:
 
         team = []
         for loc in active_locations:
+            loc_name = loc.location_name or reverse_geocode_coordinates(loc.latitude, loc.longitude)
             team.append({
                 'userId': loc.user.id,
                 'username': loc.user.username,
@@ -570,6 +594,7 @@ class TrackingService:
                 'contact': getattr(loc.user, 'contact', None),
                 'latitude': str(loc.latitude),
                 'longitude': str(loc.longitude),
+                'locationName': loc_name or f"({loc.latitude}, {loc.longitude})",
                 'accuracy': loc.accuracy,
                 'speed': loc.speed,
                 'batteryLevel': loc.battery_level,
@@ -582,5 +607,6 @@ class TrackingService:
             'activeTrackingCount': sum(1 for t in team if t['isTrackingActive']),
             'staff': team
         }
+
 
 
