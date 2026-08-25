@@ -2,7 +2,7 @@ from rest_framework import serializers
 from hr.models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest
+    LeaveRequest, UserLocationLog, UserCurrentLocation
 )
 
 
@@ -154,3 +154,100 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_date": "End date must be on or after start date."})
 
         return attrs
+
+
+# -----------------------------------------------------------------------------
+# Live GPS Tracking Serializers
+# -----------------------------------------------------------------------------
+
+class UserLocationPingSerializer(serializers.Serializer):
+    latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    longitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    accuracy = serializers.FloatField(required=False, allow_null=True)
+    speed = serializers.FloatField(required=False, allow_null=True)
+    battery_level = serializers.IntegerField(required=False, allow_null=True)
+    is_mock_location = serializers.BooleanField(required=False, default=False)
+    recorded_at = serializers.DateTimeField(required=False, allow_null=True)
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'batteryLevel': 'battery_level',
+                'isMockLocation': 'is_mock_location',
+                'recordedAt': 'recorded_at',
+                'lat': 'latitude',
+                'lng': 'longitude',
+                'lon': 'longitude',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+
+class LocationPointSerializer(serializers.Serializer):
+    latitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    longitude = serializers.DecimalField(max_digits=10, decimal_places=7, required=True)
+    accuracy = serializers.FloatField(required=False, allow_null=True)
+    speed = serializers.FloatField(required=False, allow_null=True)
+    battery_level = serializers.IntegerField(required=False, allow_null=True)
+    is_mock_location = serializers.BooleanField(required=False, default=False)
+    recorded_at = serializers.DateTimeField(required=False, allow_null=True)
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'batteryLevel': 'battery_level',
+                'isMockLocation': 'is_mock_location',
+                'recordedAt': 'recorded_at',
+                'lat': 'latitude',
+                'lng': 'longitude',
+                'lon': 'longitude',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+
+class UserLocationBatchSyncSerializer(serializers.Serializer):
+    locations = LocationPointSerializer(many=True, required=True)
+
+
+class UserCurrentLocationSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    employee_id = serializers.CharField(source='user.employee_id', read_only=True)
+    full_name = serializers.SerializerMethodField(read_only=True)
+    role_name = serializers.CharField(source='user.role.role_name', read_only=True)
+
+    class Meta:
+        model = UserCurrentLocation
+        fields = (
+            'id',
+            'user',
+            'username',
+            'employee_id',
+            'full_name',
+            'role_name',
+            'latitude',
+            'longitude',
+            'accuracy',
+            'speed',
+            'battery_level',
+            'is_tracking_active',
+            'last_updated_at'
+        )
+
+    def get_full_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
+
+
+class UserLocationLogSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+
+    class Meta:
+        model = UserLocationLog
+        fields = '__all__'
+

@@ -133,6 +133,7 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Core / Lookups', 'description': 'System lookups and configurations'},
         {'name': 'Core / Roles & Permissions', 'description': 'Custom roles and system micropermissions management'},
         {'name': 'HR - Attendance', 'description': 'Attendance tracking and check-in operations'},
+        {'name': 'HR - Live GPS Tracking', 'description': 'Real-time GPS field tracking, background ping, offline batch sync, mock location detection, and historical route playback'},
         {'name': 'HR - Leave Management', 'description': 'Employee leave requests, approvals, and balance management'},
         {'name': 'HR - Payroll', 'description': 'Payroll calculations, approvals, and salary management'},
         {'name': 'HR - Loans', 'description': 'Employee loans and EMI management'},

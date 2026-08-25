@@ -256,3 +256,56 @@ class LeaveRequest(models.Model):
             delta = (self.end_date - self.start_date).days + 1
             self.total_days = max(1, delta)
         super().save(*args, **kwargs)
+
+
+# -----------------------------------------------------------------------------
+# Live GPS Tracking Models (Field Marketing / MPO Live Tracking)
+# -----------------------------------------------------------------------------
+
+class UserLocationLog(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='location_logs'
+    )
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    accuracy = models.FloatField(null=True, blank=True, help_text="Accuracy radius in meters")
+    speed = models.FloatField(null=True, blank=True, help_text="Movement speed in m/s")
+    battery_level = models.IntegerField(null=True, blank=True, help_text="Device battery percentage")
+    is_mock_location = models.BooleanField(default=False, help_text="True if fake/mock GPS app detected")
+    recorded_at = models.DateTimeField(help_text="Device timestamp when GPS coordinate was captured")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'user_location_logs'
+        ordering = ['-recorded_at']
+        indexes = [
+            models.Index(fields=['user', 'recorded_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} @ ({self.latitude}, {self.longitude}) at {self.recorded_at}"
+
+
+class UserCurrentLocation(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='current_location'
+    )
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    accuracy = models.FloatField(null=True, blank=True)
+    speed = models.FloatField(null=True, blank=True)
+    battery_level = models.IntegerField(null=True, blank=True)
+    is_tracking_active = models.BooleanField(default=False, db_index=True)
+    last_updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'user_current_locations'
+
+    def __str__(self):
+        status_str = "ACTIVE" if self.is_tracking_active else "STOPPED"
+        return f"{self.user.username} - {status_str} @ ({self.latitude}, {self.longitude})"
+

@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from hr.models import Attendance
+from hr.models import Attendance, UserLocationLog, UserCurrentLocation
 from core.models import Role
 
 User = get_user_model()
@@ -311,4 +311,154 @@ class AttendanceSummaryAPITestCase(TestCase):
         loc_name = resp.data['data'].get('check_in_location_name') or resp.data['data'].get('checkInLocationName')
         self.assertIsNotNone(loc_name)
         self.assertNotEqual(loc_name, 'Remote / Unbounded')
+
+
+class LiveGPSTrackingAPITestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.role_mpo = Role.objects.create(role_name='Medical Representative')
+        self.role_manager = Role.objects.create(role_name='Regional Sales Manager')
+
+        self.mpo_user = User.objects.create_user(
+            username='mpo_rakib',
+            email='rakib@crescent.com',
+            password='Password@123',
+            employee_id='EMP-0050',
+            role=self.role_mpo
+        )
+
+        self.manager_user = User.objects.create_user(
+            username='rsm_tanvir',
+            email='tanvir@crescent.com',
+            password='Password@123',
+            employee_id='EMP-0005',
+            role=self.role_manager,
+            is_staff=True
+        )
+
+    def test_single_location_ping(self):
+        """Tests that /api/tracking/ping/ creates a log and updates current location."""
+        self.client.force_authenticate(user=self.mpo_user)
+
+        payload = {
+            'latitude': 23.8103310,
+            'longitude': 90.4125210,
+            'accuracy': 5.4,
+            'speed': 1.8,
+            'batteryLevel': 85,
+            'isMockLocation': False,
+            'recordedAt': '2026-08-25T11:45:00Z'
+        }
+
+        resp = self.client.post('/api/tracking/ping/', payload, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        # Check DB
+        current = UserCurrentLocation.objects.get(user=self.mpo_user)
+        self.assertTrue(current.is_tracking_active)
+        self.assertEqual(float(current.latitude), 23.810331)
+        self.assertEqual(current.battery_level, 85)
+
+        self.assertEqual(UserLocationLog.objects.filter(user=self.mpo_user).count(), 1)
+
+    def test_batch_sync_offline_locations(self):
+        """Tests that /api/tracking/batch-sync/ stores all offline points in bulk."""
+        self.client.force_authenticate(user=self.mpo_user)
+
+        payload = {
+            'locations': [
+                {
+                    'latitude': 23.8101000,
+                    'longitude': 90.4121000,
+                    'accuracy': 6.0,
+                    'speed': 2.1,
+                    'batteryLevel': 90,
+                    'isMockLocation': False,
+                    'recordedAt': '2026-08-25T09:00:00Z'
+                },
+                {
+                    'latitude': 23.8125000,
+                    'longitude': 90.4150000,
+                    'accuracy': 4.8,
+                    'speed': 12.5,
+                    'batteryLevel': 88,
+                    'isMockLocation': False,
+                    'recordedAt': '2026-08-25T09:15:00Z'
+                }
+            ]
+        }
+
+        resp = self.client.post('/api/tracking/batch-sync/', payload, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data.get('syncedPointsCount') or resp.data.get('synced_points_count'), 2)
+        self.assertEqual(UserLocationLog.objects.filter(user=self.mpo_user).count(), 2)
+
+    def test_toggle_tracking_state(self):
+        """Tests that /api/tracking/toggle/ flips the is_tracking_active boolean."""
+        self.client.force_authenticate(user=self.mpo_user)
+
+        # 1. Start tracking
+        resp = self.client.post('/api/tracking/toggle/', {'action': 'START'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data.get('isTrackingActive') or resp.data.get('is_tracking_active'))
+
+        # 2. Stop tracking
+        resp = self.client.post('/api/tracking/toggle/', {'action': 'STOP'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data.get('isTrackingActive') or resp.data.get('is_tracking_active'))
+
+    def test_my_status_endpoint(self):
+        """Tests that /api/tracking/my-status/ returns the current user's tracking state."""
+        UserCurrentLocation.objects.create(
+            user=self.mpo_user,
+            latitude=Decimal('23.8103310'),
+            longitude=Decimal('90.4125210'),
+            is_tracking_active=True,
+            battery_level=75
+        )
+
+        self.client.force_authenticate(user=self.mpo_user)
+        resp = self.client.get('/api/tracking/my-status/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data.get('isTrackingActive') or resp.data.get('is_tracking_active'))
+
+    def test_live_team_status_for_managers(self):
+        """Tests that /api/tracking/live-team/ returns full team status for authorized manager."""
+        UserCurrentLocation.objects.create(
+            user=self.mpo_user,
+            latitude=Decimal('23.8103310'),
+            longitude=Decimal('90.4125210'),
+            is_tracking_active=True,
+            battery_level=90
+        )
+
+        self.client.force_authenticate(user=self.manager_user)
+        resp = self.client.get('/api/tracking/live-team/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(resp.data.get('totalStaffCount') or resp.data.get('total_staff_count'), 1)
+
+    def test_route_history_and_distance_calculation(self):
+        """Tests that /api/tracking/route/{user_id}/ calculates Haversine route distance in KM."""
+        now = timezone.now()
+        # Seed 2 points 1 km apart
+        UserLocationLog.objects.create(
+            user=self.mpo_user,
+            latitude=Decimal('23.8103000'),
+            longitude=Decimal('90.4125000'),
+            recorded_at=now - datetime.timedelta(minutes=30)
+        )
+        UserLocationLog.objects.create(
+            user=self.mpo_user,
+            latitude=Decimal('23.8193000'),
+            longitude=Decimal('90.4125000'),
+            recorded_at=now
+        )
+
+        self.client.force_authenticate(user=self.mpo_user)
+        resp = self.client.get(f'/api/tracking/route/{self.mpo_user.id}/?date={now.date().isoformat()}')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data.get('totalPoints') or resp.data.get('total_points'), 2)
+        total_dist = resp.data.get('totalDistanceKm') or resp.data.get('total_distance_km')
+        self.assertGreater(total_dist, 0.0)
+
 

@@ -362,3 +362,225 @@ class LeaveService:
         leave_request.save()
         return leave_request
 
+
+# -----------------------------------------------------------------------------
+# 4. TrackingService (Live GPS Tracking, Batch Sync & Route Playback)
+# -----------------------------------------------------------------------------
+
+class TrackingService:
+    @staticmethod
+    def record_ping(
+        user,
+        latitude,
+        longitude,
+        accuracy=None,
+        speed=None,
+        battery_level=None,
+        is_mock_location=False,
+        recorded_at=None
+    ):
+        """
+        Records a single live GPS ping from an MPO device.
+        Updates UserCurrentLocation and creates a historical UserLocationLog entry.
+        """
+        from hr.models import UserLocationLog, UserCurrentLocation
+        now = timezone.now()
+        timestamp = recorded_at or now
+
+        with transaction.atomic():
+            # 1. Update or create Current Live Location
+            current_loc, _ = UserCurrentLocation.objects.update_or_create(
+                user=user,
+                defaults={
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'accuracy': accuracy,
+                    'speed': speed,
+                    'battery_level': battery_level,
+                    'is_tracking_active': True
+                }
+            )
+
+            # 2. Insert into historical timeline log
+            log = UserLocationLog.objects.create(
+                user=user,
+                latitude=latitude,
+                longitude=longitude,
+                accuracy=accuracy,
+                speed=speed,
+                battery_level=battery_level,
+                is_mock_location=is_mock_location,
+                recorded_at=timestamp
+            )
+
+        return current_loc, log
+
+    @staticmethod
+    def record_batch_sync(user, locations_data):
+        """
+        Bulk processes offline cached GPS locations sent in batch when network is restored.
+        """
+        from hr.models import UserLocationLog, UserCurrentLocation
+        now = timezone.now()
+        logs_to_create = []
+        latest_loc = None
+
+        with transaction.atomic():
+            for item in locations_data:
+                lat = item.get('latitude') or item.get('lat')
+                lon = item.get('longitude') or item.get('lon') or item.get('lng')
+                acc = item.get('accuracy')
+                spd = item.get('speed')
+                bat = item.get('battery_level') or item.get('batteryLevel')
+                mock = item.get('is_mock_location', False) or item.get('isMockLocation', False)
+                rec = item.get('recorded_at') or item.get('recordedAt') or now
+
+                log_entry = UserLocationLog(
+                    user=user,
+                    latitude=lat,
+                    longitude=lon,
+                    accuracy=acc,
+                    speed=spd,
+                    battery_level=bat,
+                    is_mock_location=mock,
+                    recorded_at=rec
+                )
+                logs_to_create.append(log_entry)
+                latest_loc = (lat, lon, acc, spd, bat)
+
+            if logs_to_create:
+                UserLocationLog.objects.bulk_create(logs_to_create)
+
+            # Update latest known current location if available
+            if latest_loc:
+                UserCurrentLocation.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        'latitude': latest_loc[0],
+                        'longitude': latest_loc[1],
+                        'accuracy': latest_loc[2],
+                        'speed': latest_loc[3],
+                        'battery_level': latest_loc[4],
+                        'is_tracking_active': True
+                    }
+                )
+
+        return len(logs_to_create)
+
+    @staticmethod
+    def toggle_tracking(user, action=None):
+        """
+        Starts or stops live tracking for a user.
+        action can be 'START', 'STOP', or None (which toggles the state).
+        """
+        from hr.models import UserCurrentLocation
+        current_loc, created = UserCurrentLocation.objects.get_or_create(
+            user=user,
+            defaults={
+                'latitude': Decimal('23.8103310'),
+                'longitude': Decimal('90.4125210'),
+                'is_tracking_active': False
+            }
+        )
+
+        if action:
+            new_state = action.upper() in ['START', 'TRUE', '1', 'ACTIVE']
+        else:
+            new_state = not current_loc.is_tracking_active
+
+        current_loc.is_tracking_active = new_state
+        current_loc.save(update_fields=['is_tracking_active'])
+        return current_loc
+
+    @staticmethod
+    def get_mpo_route(user, date_param=None):
+        """
+        Retrieves the chronological GPS breadcrumb points for an MPO on a specific date.
+        Calculates total distance travelled in Kilometers using Haversine algorithm.
+        """
+        import math
+        from hr.models import UserLocationLog
+
+        target_date = date_param or timezone.now().date()
+        logs = UserLocationLog.objects.filter(
+            user=user,
+            recorded_at__date=target_date
+        ).order_by('recorded_at')
+
+        points = []
+        total_distance_km = 0.0
+        prev_point = None
+
+        for log in logs:
+            lat = float(log.latitude)
+            lon = float(log.longitude)
+
+            if prev_point is not None:
+                # Haversine distance
+                lat1, lon1 = prev_point
+                lat2, lon2 = lat, lon
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                segment_km = 6371.0 * c
+                # Filter out GPS noise / teleport jumps > 50km
+                if segment_km < 50.0:
+                    total_distance_km += segment_km
+
+            prev_point = (lat, lon)
+
+            points.append({
+                'id': log.id,
+                'latitude': str(log.latitude),
+                'longitude': str(log.longitude),
+                'accuracy': log.accuracy,
+                'speed': log.speed,
+                'batteryLevel': log.battery_level,
+                'isMockLocation': log.is_mock_location,
+                'recordedAt': log.recorded_at.isoformat()
+            })
+
+        return {
+            'userId': user.id,
+            'username': user.username,
+            'fullName': user.get_full_name() or user.username,
+            'date': str(target_date),
+            'totalPoints': len(points),
+            'totalDistanceKm': round(total_distance_km, 2),
+            'points': points
+        }
+
+    @staticmethod
+    def get_live_team_status():
+        """
+        Returns real-time location and tracking status of all active field marketing staff.
+        """
+        from hr.models import UserCurrentLocation
+        active_locations = UserCurrentLocation.objects.select_related('user', 'user__role').all().order_by('-last_updated_at')
+
+        team = []
+        for loc in active_locations:
+            team.append({
+                'userId': loc.user.id,
+                'username': loc.user.username,
+                'fullName': loc.user.get_full_name() or loc.user.username,
+                'employeeId': getattr(loc.user, 'employee_id', None),
+                'role': loc.user.role.role_name if loc.user.role else 'MPO',
+                'contact': getattr(loc.user, 'contact', None),
+                'latitude': str(loc.latitude),
+                'longitude': str(loc.longitude),
+                'accuracy': loc.accuracy,
+                'speed': loc.speed,
+                'batteryLevel': loc.battery_level,
+                'isTrackingActive': loc.is_tracking_active,
+                'lastUpdatedAt': loc.last_updated_at.isoformat()
+            })
+
+        return {
+            'totalStaffCount': len(team),
+            'activeTrackingCount': sum(1 for t in team if t['isTrackingActive']),
+            'staff': team
+        }
+
+

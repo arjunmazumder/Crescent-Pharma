@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest
+    LeaveRequest, UserLocationLog, UserCurrentLocation
 )
 
 @admin.register(Attendance)
@@ -10,6 +10,18 @@ class AttendanceAdmin(admin.ModelAdmin):
     list_display = ('user', 'date', 'shift', 'status', 'check_in_time', 'check_out_time', 'check_in_location_name')
     list_filter = ('status', 'shift', 'date')
     search_fields = ('user__username', 'user__employee_id', 'notes')
+
+@admin.register(UserLocationLog)
+class UserLocationLogAdmin(admin.ModelAdmin):
+    list_display = ('user', 'latitude', 'longitude', 'accuracy', 'speed', 'battery_level', 'is_mock_location', 'recorded_at')
+    list_filter = ('is_mock_location', 'recorded_at')
+    search_fields = ('user__username', 'user__employee_id')
+
+@admin.register(UserCurrentLocation)
+class UserCurrentLocationAdmin(admin.ModelAdmin):
+    list_display = ('user', 'latitude', 'longitude', 'is_tracking_active', 'battery_level', 'last_updated_at')
+    list_filter = ('is_tracking_active', 'last_updated_at')
+    search_fields = ('user__username', 'user__employee_id')
 
 @admin.register(LeaveRequest)
 class LeaveRequestAdmin(admin.ModelAdmin):
@@ -45,3 +57,4 @@ admin.site.register(Holiday)
 admin.site.register(WeekendConfig)
 admin.site.register(OfficeLocation)
 admin.site.register(SalaryStructure)
+

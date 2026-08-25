@@ -10,14 +10,15 @@ from core.models import Role
 from hr.models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest
+    LeaveRequest, UserLocationLog, UserCurrentLocation
 )
-from hr.services import AttendanceService, PayrollService, LeaveService
+from hr.services import AttendanceService, PayrollService, LeaveService, TrackingService
 from hr.serializers import (
     HolidaySerializer, WeekendConfigSerializer,
     OfficeLocationSerializer, SalaryStructureSerializer, PayrollApprovalSerializer,
     AttendanceSerializer, PayrollSerializer, LoanSerializer, TourAllowanceSerializer,
-    LeaveRequestSerializer
+    LeaveRequestSerializer, UserLocationPingSerializer, UserLocationBatchSyncSerializer,
+    UserCurrentLocationSerializer, UserLocationLogSerializer
 )
 
 User = get_user_model()
@@ -638,3 +639,141 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             'message': "Leave request cancelled successfully.",
             'data': LeaveRequestSerializer(leave_request).data
         }, status=status.HTTP_200_OK)
+
+
+# -----------------------------------------------------------------------------
+# Live GPS Tracking ViewSet
+# -----------------------------------------------------------------------------
+
+@extend_schema(tags=['HR - Live GPS Tracking'])
+class TrackingViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Record Live Location Ping (Mobile Foreground Service)',
+        description='Receives real-time GPS coordinate from the field marketing officer mobile device. Updates current location and appends to historical route logs.',
+        request=UserLocationPingSerializer,
+        responses={200: UserCurrentLocationSerializer}
+    )
+    @action(detail=False, methods=['post'], url_path='ping')
+    def ping(self, request):
+        serializer = UserLocationPingSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        current_loc, log = TrackingService.record_ping(
+            user=request.user,
+            latitude=data['latitude'],
+            longitude=data['longitude'],
+            accuracy=data.get('accuracy'),
+            speed=data.get('speed'),
+            battery_level=data.get('battery_level'),
+            is_mock_location=data.get('is_mock_location', False),
+            recorded_at=data.get('recorded_at')
+        )
+
+        return Response({
+            'status': 'RECORDED',
+            'isTrackingActive': current_loc.is_tracking_active,
+            'location': UserCurrentLocationSerializer(current_loc).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Sync Offline Cached GPS Coordinates (Batch Sync)',
+        description='Bulk inserts offline cached GPS points collected when the mobile device was out of network coverage.',
+        request=UserLocationBatchSyncSerializer,
+        responses={200: dict}
+    )
+    @action(detail=False, methods=['post'], url_path='batch-sync')
+    def batch_sync(self, request):
+        serializer = UserLocationBatchSyncSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        locations = serializer.validated_data.get('locations', [])
+        synced_count = TrackingService.record_batch_sync(user=request.user, locations_data=locations)
+
+        return Response({
+            'status': 'SYNCED',
+            'syncedPointsCount': synced_count,
+            'message': f"{synced_count} offline location points synced successfully."
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Start / Stop Live Tracking Toggle',
+        description='Toggles or explicitly sets tracking status (START or STOP) from the mobile action button.',
+        parameters=[
+            OpenApiParameter(name='action', type=str, location=OpenApiParameter.QUERY, description='Optional action: START or STOP', required=False)
+        ]
+    )
+    @action(detail=False, methods=['post'], url_path='toggle')
+    def toggle(self, request):
+        action_param = request.data.get('action') or request.query_params.get('action')
+        current_loc = TrackingService.toggle_tracking(user=request.user, action=action_param)
+
+        return Response({
+            'isTrackingActive': current_loc.is_tracking_active,
+            'message': f"Tracking {'started' if current_loc.is_tracking_active else 'stopped'} successfully.",
+            'location': UserCurrentLocationSerializer(current_loc).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Get Current User Live Tracking Status',
+        description='Returns current tracking state, active coordinates, and last updated time for the authenticated MPO.'
+    )
+    @action(detail=False, methods=['get'], url_path='my-status')
+    def my_status(self, request):
+        current_loc = UserCurrentLocation.objects.filter(user=request.user).first()
+        if not current_loc:
+            return Response({
+                'isTrackingActive': False,
+                'location': None
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            'isTrackingActive': current_loc.is_tracking_active,
+            'location': UserCurrentLocationSerializer(current_loc).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Get Real-time Fleet Team Map Status (Admin / Manager)',
+        description='Returns all field marketing officers with active tracking status, latest coordinates, and battery level for Web Map visualizers.'
+    )
+    @action(detail=False, methods=['get'], url_path='live-team')
+    def live_team(self, request):
+        if not (request.user.is_superuser or request.user.is_staff or getattr(request.user, 'role', None) and 'Manager' in str(request.user.role)):
+            return Response({'error': 'Permission denied: Only managers can view team live map.'}, status=status.HTTP_403_FORBIDDEN)
+
+        team_status = TrackingService.get_live_team_status()
+        return Response(team_status, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['HR - Live GPS Tracking'],
+        summary='Get MPO Route Breadcrumb History & Travel Distance (KM)',
+        description='Returns chronological GPS breadcrumb points for a given MPO on a date, with calculated travel distance in KM for TA/DA allowance.',
+        parameters=[
+            OpenApiParameter(name='date', type=str, location=OpenApiParameter.QUERY, description='Optional date (YYYY-MM-DD)', required=False)
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path=r'route/(?P<user_id>\d+)')
+    def route(self, request, user_id=None):
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': f"Employee with ID {user_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user.id != target_user.id and not (request.user.is_superuser or request.user.is_staff):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        date_str = request.query_params.get('date')
+        date_param = parse_date(date_str) if date_str else timezone.now().date()
+
+        route_data = TrackingService.get_mpo_route(user=target_user, date_param=date_param)
+        return Response(route_data, status=status.HTTP_200_OK)
+

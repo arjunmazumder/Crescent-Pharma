@@ -4,11 +4,12 @@ from hr.views import (
     AttendanceViewSet, PayrollViewSet, LoanViewSet, TourAllowanceViewSet,
     HolidayViewSet, WeekendConfigViewSet,
     OfficeLocationViewSet, SalaryStructureViewSet, PayrollApprovalViewSet,
-    LeaveRequestViewSet
+    LeaveRequestViewSet, TrackingViewSet
 )
 
 router = DefaultRouter()
 router.register(r'attendance', AttendanceViewSet, basename='attendance')
+router.register(r'tracking', TrackingViewSet, basename='tracking')
 router.register(r'leave-requests', LeaveRequestViewSet, basename='leaverequests')
 router.register(r'payroll', PayrollViewSet, basename='payroll')
 router.register(r'loans', LoanViewSet, basename='loans')
