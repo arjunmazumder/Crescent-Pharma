@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from inventory.models import Product, Warehouse, Category, StockLevel, StockMovement
 from inventory.services import InventoryService
+from accounting.models import Voucher, JournalEntry, VoucherStatus
 
 User = get_user_model()
 
@@ -92,3 +93,66 @@ class InventoryDamageAndLossTests(TestCase):
         self.assertEqual(data['warehouseBreakdown'][0]['warehouseName'], 'Dhaka Main Depot')
         self.assertEqual(data['warehouseBreakdown'][0]['totalLostQuantity'], 15)
         self.assertEqual(data['warehouseBreakdown'][0]['totalLossValue'], '1500.00')
+
+    def test_damage_and_shrinkage_reach_the_ledger(self):
+        """
+        The damage report always valued these losses, but nothing posted them,
+        so inventory on the balance sheet stayed overstated.
+        """
+        InventoryService.record_stock_movement(
+            product=self.product,
+            warehouse=self.warehouse,
+            batch_number='BATCH-DAM-01',
+            movement_type='DAMAGE',
+            quantity=10,
+            notes='Water leakage damage',
+            user=self.user
+        )
+
+        vouchers = Voucher.objects.filter(source_module='INVENTORY_DAMAGE')
+        self.assertEqual(vouchers.count(), 1, "Damage write-off was not booked to the ledger.")
+
+        voucher = vouchers.first()
+        self.assertEqual(voucher.status, VoucherStatus.POSTED)
+        self.assertEqual(voucher.total_debit, voucher.total_credit)
+        # 10 boxes at a 100.00 purchase price.
+        self.assertEqual(voucher.total_debit, Decimal('1000.00'))
+        # Dr 5300 damaged stock loss, Cr 1140 inventory.
+        self.assertEqual(voucher.entries.get(account__code='5300').debit_amount, Decimal('1000.00'))
+        self.assertEqual(voucher.entries.get(account__code='1140').credit_amount, Decimal('1000.00'))
+
+        # An audit finding 5 boxes short is the same kind of loss.
+        InventoryService.adjust_stock(
+            product=self.product,
+            warehouse=self.warehouse,
+            batch_number='BATCH-DAM-01',
+            new_quantity=185,
+            reference_no='AUDIT-2026-Q1',
+            user=self.user
+        )
+        self.assertEqual(Voucher.objects.filter(source_module='INVENTORY_DAMAGE').count(), 2)
+        shrinkage = Voucher.objects.filter(source_module='INVENTORY_DAMAGE').order_by('-id').first()
+        self.assertEqual(shrinkage.total_debit, Decimal('500.00'))
+
+    def test_normal_inflow_does_not_touch_the_ledger(self):
+        """Only losses post. A routine receipt must not book an expense."""
+        InventoryService.record_stock_movement(
+            product=self.product,
+            warehouse=self.warehouse,
+            batch_number='BATCH-DAM-01',
+            movement_type='IN',
+            quantity=50,
+            user=self.user
+        )
+        self.assertEqual(Voucher.objects.filter(source_module='INVENTORY_DAMAGE').count(), 0)
+
+    def test_audit_surplus_does_not_book_a_loss(self):
+        """Counting more than the system says is not a loss."""
+        InventoryService.adjust_stock(
+            product=self.product,
+            warehouse=self.warehouse,
+            batch_number='BATCH-DAM-01',
+            new_quantity=250,
+            user=self.user
+        )
+        self.assertEqual(Voucher.objects.filter(source_module='INVENTORY_DAMAGE').count(), 0)

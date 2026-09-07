@@ -41,7 +41,12 @@ class CustomTokenRefreshView(TokenRefreshView):
 
 @extend_schema(tags=['Users / Employees'])
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all().select_related('role').order_by('-id')
+    # The serializer renders role_permissions, extra_permissions_details and
+    # effective_permissions, each of which walks a m2m. Without these
+    # prefetches a page of users cost several permission queries apiece.
+    queryset = User.objects.all().select_related('role').prefetch_related(
+        'user_permissions__content_type', 'role__permissions__content_type'
+    ).order_by('-id')
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
     search_fields = ['username', 'email', 'employee_id', 'contact', 'nid_number']

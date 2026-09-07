@@ -21,8 +21,12 @@ User = get_user_model()
 
 
 class AccountingModuleTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(
+    # setUpTestData runs once per class rather than once per test method.
+    # Seeding the chart of accounts creates 51 account heads, a fiscal year and
+    # 12 periods; with 10 tests in this class, setUp was doing that ten times.
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
             username='accountant_admin',
             email='accountant@crescentpharma.com',
             password='Password123!',
@@ -33,14 +37,14 @@ class AccountingModuleTests(TestCase):
         # Seed standard chart of accounts & fiscal year
         call_command('seed_chart_of_accounts')
 
-        self.cash_acc = AccountHead.objects.get(code='1111')
-        self.bank_acc = AccountHead.objects.get(code='1112')
-        self.ar_acc = AccountHead.objects.get(code='1120')
-        self.sales_acc = AccountHead.objects.get(code='4100')
-        self.vat_acc = AccountHead.objects.get(code='2150')
-        self.discount_acc = AccountHead.objects.get(code='5200')
-        self.salary_exp_acc = AccountHead.objects.get(code='6100')
-        self.loan_rec_acc = AccountHead.objects.get(code='1130')
+        cls.cash_acc = AccountHead.objects.get(code='1111')
+        cls.bank_acc = AccountHead.objects.get(code='1112')
+        cls.ar_acc = AccountHead.objects.get(code='1120')
+        cls.sales_acc = AccountHead.objects.get(code='4100')
+        cls.vat_acc = AccountHead.objects.get(code='2150')
+        cls.discount_acc = AccountHead.objects.get(code='5200')
+        cls.salary_exp_acc = AccountHead.objects.get(code='6100')
+        cls.loan_rec_acc = AccountHead.objects.get(code='1130')
 
     def test_seed_chart_of_accounts_and_fiscal_year(self):
         """Verifies that all 5 standard categories are seeded with correct parent-child relationships."""

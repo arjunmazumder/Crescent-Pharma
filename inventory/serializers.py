@@ -30,10 +30,15 @@ class CategorySerializer(serializers.ModelSerializer):
         )
 
     def get_product_count(self, obj):
-        return obj.products.count()
+        return len(obj.products.all())
 
     def get_subcategories(self, obj):
-        children = obj.subcategories.filter(is_active=True).order_by('display_order', 'name')
+        # Filtering in Python keeps the prefetched children; .filter() on the
+        # manager would re-query once per category, at every nesting level.
+        children = sorted(
+            (c for c in obj.subcategories.all() if c.is_active),
+            key=lambda c: (c.display_order, c.name),
+        )
         return CategorySerializer(children, many=True).data
 
 
@@ -170,8 +175,9 @@ class ProductSerializer(serializers.ModelSerializer):
         return super().to_internal_value(data)
 
     def get_total_stock(self, obj):
-        result = obj.stock_levels.aggregate(total=Sum('quantity'))
-        return result['total'] or 0
+        # stock_levels is prefetched by the viewset; .all() reads that cache
+        # while .aggregate() would issue one extra query per product.
+        return sum(level.quantity or 0 for level in obj.stock_levels.all())
 
     def create(self, validated_data):
         attribute_values = validated_data.pop('attribute_value_ids', [])
@@ -210,7 +216,7 @@ class WarehouseSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_total_products_count(self, obj):
-        return obj.stock_levels.values('product').distinct().count()
+        return len({level.product_id for level in obj.stock_levels.all()})
 
 
 class StockLevelSerializer(serializers.ModelSerializer):
@@ -240,6 +246,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
     product = SimpleProductSerializer(read_only=True)
     warehouse = SimpleWarehouseSerializer(read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
 
     class Meta:
         model = StockMovement
@@ -253,6 +260,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
             'reference_no',
             'notes',
             'created_by_username',
+            'created_by_name',
             'created_at',
             'product',
             'warehouse',

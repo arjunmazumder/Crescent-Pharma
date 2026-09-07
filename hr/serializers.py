@@ -1,9 +1,14 @@
+import copy
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from hr.models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest, UserLocationLog, UserCurrentLocation
+    LeaveRequest, UserLocationLog, UserCurrentLocation,
+    TAComponent, EmployeeTARate, AllowanceBill, AllowanceBillLine, BonusType
 )
+from hr.services import AllowanceEligibilityService
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
@@ -48,6 +53,9 @@ class PayrollSerializer(serializers.ModelSerializer):
             'total_ta_allowance',
             'total_tour_allowance',
             'loan_deduction',
+            'bonus_type',
+            'bonus_percentage',
+            'total_bonus',
             'created_at',
         )
 
@@ -60,14 +68,48 @@ class LoanSerializer(serializers.ModelSerializer):
         model = Loan
         fields = '__all__'
 
+    def validate(self, attrs):
+        """
+        ModelSerializer does not call Model.clean(), so the loan rules are invoked
+        here. Without this the one-open-loan constraint would only surface as a
+        database IntegrityError (HTTP 500) instead of a field error.
+        """
+        candidate = copy.copy(self.instance) if self.instance is not None else Loan()
+        for field, value in attrs.items():
+            setattr(candidate, field, value)
+
+        try:
+            candidate.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(serializers.as_serializer_error(exc))
+
+        return attrs
+
 
 class TourAllowanceSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     employee_id = serializers.CharField(source='user.employee_id', read_only=True)
+    is_payable = serializers.SerializerMethodField(read_only=True)
+    non_payable_reason = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = TourAllowance
         fields = '__all__'
+
+    def _calendar(self):
+        # Cached on the serializer instance, so a list response loads the
+        # holiday and weekend tables once rather than once per row.
+        if not hasattr(self, '_calendar_cache'):
+            self._calendar_cache = AllowanceEligibilityService.get_calendar()
+        return self._calendar_cache
+
+    def get_non_payable_reason(self, obj):
+        """Shown to the approver so a holiday tour is visible before approval."""
+        holidays, weekend_days = self._calendar()
+        return AllowanceEligibilityService.get_non_payable_reason(obj.date, holidays, weekend_days)
+
+    def get_is_payable(self, obj):
+        return self.get_non_payable_reason(obj) is None
 
 
 class HolidaySerializer(serializers.ModelSerializer):
@@ -257,3 +299,109 @@ class UserLocationLogSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+
+
+class TAComponentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TAComponent
+        fields = '__all__'
+
+
+class EmployeeTARateSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    employee_id = serializers.CharField(source='user.employee_id', read_only=True)
+    component_code = serializers.CharField(source='component.code', read_only=True, default='')
+    component_name = serializers.CharField(source='component.name', read_only=True, default='')
+
+    class Meta:
+        model = EmployeeTARate
+        fields = '__all__'
+        extra_kwargs = {
+            'component': {'required': False, 'allow_null': True}
+        }
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            mapping = {
+                'userId': 'user',
+                'componentId': 'component',
+                'dailyAmount': 'daily_amount',
+                'effectiveFrom': 'effective_from',
+                'isActive': 'is_active',
+            }
+            for camel, snake in mapping.items():
+                if camel in data and snake not in data:
+                    data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        candidate = copy.copy(self.instance) if self.instance is not None else EmployeeTARate()
+        for field, value in attrs.items():
+            setattr(candidate, field, value)
+        try:
+            candidate.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(serializers.as_serializer_error(exc))
+        return attrs
+
+
+class AllowanceBillLineSerializer(serializers.ModelSerializer):
+    component_code = serializers.CharField(source='component.code', read_only=True)
+    component_name = serializers.CharField(source='component.name', read_only=True)
+    tour_date = serializers.DateField(source='tour_allowance.date', read_only=True)
+
+    class Meta:
+        model = AllowanceBillLine
+        fields = (
+            'id', 'source', 'component', 'component_code', 'component_name',
+            'tour_allowance', 'tour_date', 'days', 'rate', 'amount', 'description'
+        )
+
+
+class AllowanceBillSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    employee_id = serializers.CharField(source='user.employee_id', read_only=True)
+    generated_by_username = serializers.CharField(source='generated_by.username', read_only=True)
+    approved_by_username = serializers.CharField(source='approved_by.username', read_only=True)
+    voucher_number = serializers.CharField(source='accounting_voucher.voucher_number', read_only=True)
+    lines = AllowanceBillLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AllowanceBill
+        fields = (
+            'id', 'bill_number', 'user', 'username', 'employee_id',
+            'month', 'year', 'status', 'eligible_days',
+            'total_daily_ta', 'total_tour_da', 'total_amount',
+            'accounting_voucher', 'voucher_number',
+            'notes', 'rejection_reason',
+            'generated_by', 'generated_by_username',
+            'approved_by', 'approved_by_username', 'approved_at', 'paid_at',
+            'created_at', 'updated_at', 'lines'
+        )
+
+
+class AllowanceBillGenerateSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(required=False, help_text="Omit on generate-all")
+    month = serializers.IntegerField(min_value=1, max_value=12)
+    year = serializers.IntegerField(min_value=2000, max_value=2200)
+
+
+class AllowanceBillRejectSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+
+class BonusTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BonusType
+        fields = '__all__'
+
+    def validate(self, attrs):
+        candidate = copy.copy(self.instance) if self.instance is not None else BonusType()
+        for field, value in attrs.items():
+            setattr(candidate, field, value)
+        try:
+            candidate.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(serializers.as_serializer_error(exc))
+        return attrs

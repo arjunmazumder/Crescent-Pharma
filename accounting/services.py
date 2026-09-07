@@ -425,6 +425,9 @@ class AccountingIntegrationService:
         ta_tour_exp = AccountingIntegrationService.get_or_create_head(
             '6120', 'Travel & Tour Allowances (TA/DA)', AccountType.EXPENSE
         )
+        bonus_exp = AccountingIntegrationService.get_or_create_head(
+            '6130', 'Festival Bonus', AccountType.EXPENSE
+        )
         loan_rec = AccountingIntegrationService.get_or_create_head(
             '1130', 'Employee Advances & Loans Receivable', AccountType.ASSET
         )
@@ -469,12 +472,31 @@ class AccountingIntegrationService:
                 'description': f"Allowances for {payroll.user.username} ({payroll.month}/{payroll.year})"
             })
 
+        bonus_amount = Decimal(str(getattr(payroll, 'total_bonus', None) or '0.00')).quantize(Decimal('0.01'))
+        if bonus_amount > 0:
+            label = payroll.bonus_type.name if payroll.bonus_type else 'Festival Bonus'
+            entries.append({
+                'account_id': bonus_exp.id,
+                'debit_amount': bonus_amount,
+                'credit_amount': Decimal('0.00'),
+                'description': (
+                    f"{label} at {payroll.bonus_percentage}% of basic for "
+                    f"{payroll.user.username} ({payroll.month}/{payroll.year})"
+                ),
+                'party_type': PartyType.EMPLOYEE,
+                'party_id': payroll.user_id
+            })
+
+        # TA and DA moved to the separate AllowanceBill, so payrolls generated
+        # from that change onward carry zero here and no line is added. The
+        # branch stays for payrolls raised before the split: their net payable
+        # still includes TA, so dropping the debit would unbalance the voucher.
         if ta_tour > 0:
             entries.append({
                 'account_id': ta_tour_exp.id,
                 'debit_amount': ta_tour,
                 'credit_amount': Decimal('0.00'),
-                'description': f"TA & Tour Expenses for {payroll.user.username} ({payroll.month}/{payroll.year})"
+                'description': f"TA & Tour Expenses for {payroll.user.username} ({payroll.month}/{payroll.year}) [pre-split payroll]"
             })
 
         # Credits
@@ -511,6 +533,66 @@ class AccountingIntegrationService:
         )
 
         return voucher
+
+    @staticmethod
+    def post_allowance_bill_disbursement(bill, user=None):
+        """
+        Posts the monthly TA/DA bill, which is disbursed separately from salary:
+        - Debit:  Travel & Tour Allowances (6120)
+        - Credit: Bank Current Accounts (1112)
+        """
+        total = Decimal(str(bill.total_amount or '0.00')).quantize(Decimal('0.01'))
+        if total <= Decimal('0.00'):
+            raise ValueError(
+                f"TA/DA bill {bill.bill_number} has no payable amount to post."
+            )
+
+        ta_expense = AccountingIntegrationService.get_or_create_head(
+            '6120', 'Travel & Tour Allowances (TA/DA)', AccountType.EXPENSE
+        )
+        bank = AccountingIntegrationService.get_or_create_head(
+            '1112', 'Bank Current Accounts (Corporate Disbursement)',
+            AccountType.ASSET, is_reconciliation=True
+        )
+
+        entries = [
+            {
+                'account_id': ta_expense.id,
+                'debit_amount': total,
+                'credit_amount': Decimal('0.00'),
+                'description': (
+                    f"TA/DA for {bill.user.username} ({bill.month}/{bill.year}): "
+                    f"TA {bill.total_daily_ta} over {bill.eligible_days} day(s), "
+                    f"tour DA {bill.total_tour_da}"
+                ),
+                'party_type': PartyType.EMPLOYEE,
+                'party_id': bill.user_id
+            },
+            {
+                'account_id': bank.id,
+                'debit_amount': Decimal('0.00'),
+                'credit_amount': total,
+                'description': f"TA/DA disbursement to {bill.user.username} ({bill.bill_number})",
+                'party_type': PartyType.EMPLOYEE,
+                'party_id': bill.user_id
+            }
+        ]
+
+        return VoucherPostingService.create_and_post_voucher(
+            voucher_type=VoucherType.PAYMENT,
+            voucher_date=timezone.now().date(),
+            narration=(
+                f"Monthly TA/DA Disbursement for {bill.user.username} "
+                f"({bill.month}/{bill.year}) - {bill.bill_number}"
+            ),
+            entries_data=entries,
+            reference_no=bill.bill_number,
+            is_auto_generated=True,
+            source_module='HR_ALLOWANCE_BILL',
+            source_id=bill.id,
+            user=user,
+            auto_post=True
+        )
 
     @staticmethod
     def post_inventory_damage_loss(product, warehouse, batch_number, quantity, financial_loss, reference_no="", notes="", user=None):

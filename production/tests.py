@@ -1,12 +1,16 @@
 from decimal import Decimal
 import datetime
+from unittest import mock
 from django.test import TestCase
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 
 from inventory.models import Category, Product, Warehouse, StockLevel
 from inventory.services import InventoryService
-from accounting.models import AccountHead, AccountType, FiscalYear, AccountingPeriod
+from accounting.models import (
+    AccountHead, AccountType, FiscalYear, AccountingPeriod,
+    VoucherType, VoucherStatus
+)
 from production.models import (
     BOMHeader, BOMItem, ProductionLine, ProductionPlan,
     ProductionBatch, MaterialIssueSlip, MaterialIssueItem,
@@ -369,6 +373,27 @@ class ProductionModuleTestCase(TestCase):
         self.assertEqual(fg_stock.mfg_date, mfg_date)
         self.assertEqual(fg_stock.expiry_date, exp_date)
 
+        # 6b. Verify Manufacturing Cost Capitalization Journal Voucher
+        transfer.refresh_from_db()
+        self.assertIsNotNone(
+            transfer.accounting_voucher,
+            "Manufacturing cost was not capitalized to the General Ledger."
+        )
+        voucher = transfer.accounting_voucher
+        self.assertEqual(voucher.voucher_type, VoucherType.JOURNAL)
+        self.assertEqual(voucher.status, VoucherStatus.POSTED)
+        self.assertEqual(voucher.source_module, 'PRODUCTION')
+        self.assertEqual(voucher.total_debit, voucher.total_credit)
+        self.assertGreater(voucher.total_debit, Decimal('0.00'))
+
+        # Debit Finished Goods (1140), Credit Raw & Packing Materials (1141)
+        fg_line = voucher.entries.get(account__code='1140')
+        rm_line = voucher.entries.get(account__code='1141')
+        self.assertEqual(fg_line.debit_amount, voucher.total_debit)
+        self.assertEqual(fg_line.credit_amount, Decimal('0.00'))
+        self.assertEqual(rm_line.credit_amount, voucher.total_debit)
+        self.assertEqual(rm_line.debit_amount, Decimal('0.00'))
+
         # 7. Verify 360° Batch Traceability Audit
         traceability = ProductionReportService.get_batch_traceability(batch_number=batch.batch_number)
         self.assertEqual(traceability['batch_info']['batch_number'], batch.batch_number)
@@ -383,3 +408,45 @@ class ProductionModuleTestCase(TestCase):
         self.assertEqual(dashboard['overview']['total_batches_count'], 1)
         self.assertEqual(dashboard['overview']['completed_batches_this_month'], 1)
         self.assertEqual(dashboard['overview']['units_produced_this_month'], actual_produced)
+
+
+class AccountingFailureIsLoggedTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='log_guard', password='x')
+        cat = Category.objects.create(name='Tablets', code='TAB-LG')
+        self.med = Product.objects.create(name='Napa 500', generic_name='Paracetamol', category=cat)
+        self.src = Warehouse.objects.create(name='RM Store', code='WH-RM-LG')
+        self.dst = Warehouse.objects.create(name='FG Depot', code='WH-FG-LG')
+        self.bom = BOMHeader.objects.create(
+            finished_product=self.med, standard_batch_size=Decimal('1000.000'),
+            batch_unit='Tablets', is_active=True, is_approved=True
+        )
+        self.line = ProductionLine.objects.create(line_name='Press 1', is_active=True)
+        self.batch = ProductionBatch.objects.create(
+            bom=self.bom, finished_product=self.med, production_line=self.line,
+            source_warehouse=self.src, destination_warehouse=self.dst,
+            planned_quantity=Decimal('1000.000'),
+            manufacturing_date=datetime.date(2026, 8, 1),
+            expiry_date=datetime.date(2028, 8, 1),
+        )
+
+    def test_voucher_failure_is_logged_not_swallowed(self):
+        with mock.patch(
+            'production.services.VoucherPostingService.create_and_post_voucher',
+            side_effect=ValueError("Accounting Period 'August 2026' is locked.")
+        ):
+            with self.assertLogs('production.services', level='ERROR') as captured:
+                transfer = ProductionBatchService.complete_and_transfer(
+                    batch=self.batch,
+                    actual_produced_quantity=Decimal('990.000'),
+                    rejected_quantity=Decimal('10.000'),
+                    qc_release_certificate_number='COA-LG-1',
+                    user=self.user,
+                )
+
+        # The batch still completes; the failure is recorded rather than hidden.
+        self.assertIsNone(transfer.accounting_voucher)
+        joined = "\n".join(captured.output)
+        self.assertIn('Failed to post manufacturing cost voucher', joined)
+        self.assertIn(self.batch.batch_number, joined)
+        self.assertIn("is locked", joined)

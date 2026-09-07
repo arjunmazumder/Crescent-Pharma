@@ -4,7 +4,9 @@ from hr.views import (
     AttendanceViewSet, PayrollViewSet, LoanViewSet, TourAllowanceViewSet,
     HolidayViewSet, WeekendConfigViewSet,
     OfficeLocationViewSet, SalaryStructureViewSet, PayrollApprovalViewSet,
-    LeaveRequestViewSet, TrackingViewSet
+    LeaveRequestViewSet, TrackingViewSet,
+    TAComponentViewSet, EmployeeTARateViewSet, AllowanceBillViewSet,
+    BonusTypeViewSet
 )
 
 router = DefaultRouter()
@@ -19,6 +21,10 @@ router.register(r'weekend-configs', WeekendConfigViewSet, basename='weekendconfi
 router.register(r'office-locations', OfficeLocationViewSet, basename='officelocations')
 router.register(r'salary-structures', SalaryStructureViewSet, basename='salarystructures')
 router.register(r'payroll-approvals', PayrollApprovalViewSet, basename='payrollapprovals')
+router.register(r'ta-components', TAComponentViewSet, basename='tacomponents')
+router.register(r'employee-ta-rates', EmployeeTARateViewSet, basename='employeetarates')
+router.register(r'allowance-bills', AllowanceBillViewSet, basename='allowancebills')
+router.register(r'bonus-types', BonusTypeViewSet, basename='bonustypes')
 
 urlpatterns = [
     path('', include(router.urls)),

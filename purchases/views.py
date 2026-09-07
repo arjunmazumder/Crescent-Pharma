@@ -379,7 +379,14 @@ class LetterOfCreditViewSet(viewsets.ModelViewSet):
 
 @extend_schema(tags=['Purchases / Goods Received Notes (GRN)'])
 class GoodsReceivedNoteViewSet(viewsets.ModelViewSet):
-    queryset = GoodsReceivedNote.objects.all().select_related('purchase_order', 'letter_of_credit', 'receiving_warehouse', 'accounting_voucher', 'created_by', 'approved_by').prefetch_related('items__product').order_by('-received_date', '-id')
+    queryset = GoodsReceivedNote.objects.all().select_related('purchase_order', 'letter_of_credit', 'receiving_warehouse', 'accounting_voucher', 'created_by', 'approved_by').prefetch_related(
+        # Items use SimpleProductSerializer, so the product row is all that is
+        # needed. receiving_warehouse_details is a full WarehouseSerializer
+        # whose product count walks stock levels - prefetch those or it costs
+        # one query per note.
+        'items__product',
+        'receiving_warehouse__stock_levels',
+    ).order_by('-received_date', '-id')
     serializer_class = GoodsReceivedNoteSerializer
 
     def get_queryset(self):

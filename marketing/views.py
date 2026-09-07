@@ -20,7 +20,7 @@ User = get_user_model()
 class SalesTargetViewSet(viewsets.ModelViewSet):
     queryset = SalesTarget.objects.all().select_related('assigned_to', 'assigned_by').prefetch_related('product_items__product').order_by('-start_date', '-created_at')
     serializer_class = SalesTargetSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
     search_fields = ['title', 'target_code', 'assigned_to__username', 'assigned_to__employee_id', 'territory_name', 'notes']
     filterset_fields = ['assigned_to', 'period_type', 'target_type', 'status', 'start_date', 'end_date']
     ordering_fields = ['id', 'start_date', 'end_date', 'total_target_amount', 'created_at']

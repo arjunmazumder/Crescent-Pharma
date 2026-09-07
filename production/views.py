@@ -1,5 +1,6 @@
 from decimal import Decimal
 from django.db import transaction
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -39,7 +40,13 @@ from .services import BOMService, ProductionBatchService, ProductionReportServic
     destroy=extend_schema(tags=['Production / Bill of Materials (BOM)'], summary="Delete BOM"),
 )
 class BOMViewSet(viewsets.ModelViewSet):
-    queryset = BOMHeader.objects.select_related('finished_product', 'approved_by', 'created_by').prefetch_related('items__material').all()
+    queryset = BOMHeader.objects.select_related(
+        'finished_product__category', 'approved_by', 'created_by'
+    ).prefetch_related(
+        'items__material',
+        'finished_product__stock_levels',
+        'finished_product__product_attributes__attribute_value__attribute',
+    ).all()
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['is_active', 'is_approved', 'finished_product']
     search_fields = ['bom_code', 'mfr_number', 'finished_product__name', 'finished_product__unique_id']
@@ -196,20 +203,62 @@ class ProductionPlanViewSet(viewsets.ModelViewSet):
     destroy=extend_schema(tags=['Production / Manufacturing Batches & WIP'], summary="Delete batch"),
 )
 class ProductionBatchViewSet(viewsets.ModelViewSet):
+    # The list serializer only reads flat FK fields, so joins cover it and every
+    # prefetch would be a wasted round trip. The detail serializer nests the
+    # full product, BOM, warehouses and users, so those relations are pulled in
+    # only for the actions that actually render them (see get_queryset).
     queryset = ProductionBatch.objects.select_related(
         'production_plan', 'bom', 'finished_product', 'production_line',
         'source_warehouse', 'destination_warehouse', 'assigned_supervisor', 'created_by'
-    ).prefetch_related(
-        'assigned_operators',
-        'material_issue_slips__items__material',
-        'stage_logs__operator',
-        'finished_goods_transfers__destination_warehouse'
     ).all()
+
+    # Single-object relations go through select_related (a join, no extra
+    # query). Collections go through Prefetch with their own select_related, so
+    # the nested slip/log/transfer rows arrive with their user and warehouse
+    # already joined instead of one lookup per row.
+    DETAIL_SELECT = (
+        'bom__finished_product__category',
+        'finished_product__category',
+        'assigned_supervisor__role',
+    )
+
+    @classmethod
+    def detail_prefetch(cls):
+        return (
+            Prefetch('material_issue_slips',
+                     queryset=MaterialIssueSlip.objects.select_related(
+                         'warehouse', 'issued_by', 'received_by')),
+            'material_issue_slips__items__material',
+            Prefetch('stage_logs',
+                     queryset=ProductionStageLog.objects.select_related('operator')),
+            Prefetch('finished_goods_transfers',
+                     queryset=FinishedGoodsTransfer.objects.select_related(
+                         'destination_warehouse', 'finished_product',
+                         'received_by', 'accounting_voucher')),
+            'assigned_operators',
+            'assigned_operators__user_permissions',
+            'assigned_operators__role__permissions',
+            'assigned_supervisor__user_permissions',
+            'assigned_supervisor__role__permissions',
+            'finished_product__stock_levels',
+            'finished_product__product_attributes__attribute_value__attribute',
+            'bom__items__material',
+            'bom__finished_product__stock_levels',
+            'bom__finished_product__product_attributes__attribute_value__attribute',
+            'source_warehouse__stock_levels',
+            'destination_warehouse__stock_levels',
+        )
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'current_stage', 'production_line', 'source_warehouse', 'destination_warehouse', 'finished_product']
     search_fields = ['batch_number', 'finished_product__name', 'finished_product__unique_id', 'bom__bom_code', 'bom__mfr_number']
     ordering_fields = ['manufacturing_date', 'expiry_date', 'planned_quantity', 'actual_produced_quantity', 'created_at']
     ordering = ['-manufacturing_date', '-id']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action in ('list', 'create'):
+            return qs
+        return qs.select_related(*self.DETAIL_SELECT).prefetch_related(*self.detail_prefetch())
 
     def get_serializer_class(self):
         if self.action == 'create':

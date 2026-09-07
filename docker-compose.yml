@@ -1,0 +1,46 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: >
+      daphne
+      -b 0.0.0.0
+      -p 8012
+      crescent_pharma.asgi:application
+
+    ports:
+      - "8012:8012"
+
+    env_file:
+      - .env
+
+    restart: unless-stopped
+
+    volumes:
+      - media_data:/app/media
+      - static_data:/app/staticfiles
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: celery -A crescent_pharma worker -l info
+
+    env_file:
+      - .env
+
+    restart: unless-stopped
+
+    depends_on:
+      - web
+
+    volumes:
+      - media_data:/app/media
+      - static_data:/app/staticfiles
+
+volumes:
+  media_data:
+  static_data:

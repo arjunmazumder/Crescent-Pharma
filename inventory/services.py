@@ -1,9 +1,12 @@
 import datetime
+import logging
 from decimal import Decimal
 from django.db import transaction
 from django.db.models import Sum, F, Q
 from django.utils import timezone
 from .models import Product, Warehouse, StockLevel, StockMovement
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryService:
@@ -135,7 +138,58 @@ class InventoryService:
                 created_by=user
             )
 
+            InventoryService._post_loss_to_ledger(movement=movement, user=user)
+
             return stock_level, movement
+
+    @staticmethod
+    def _post_loss_to_ledger(movement, user=None):
+        """
+        Books a damage write-off or an audit shrinkage as a real expense.
+
+        The damage report has always valued these losses, but nothing ever
+        posted them, so inventory on the balance sheet stayed overstated by
+        every damaged and every missing unit.
+        """
+        movement_type = str(movement.movement_type).lower()
+        is_damage = 'damage' in movement_type or 'expired' in movement_type
+        is_shrinkage = 'adjustment' in movement_type and movement.new_stock < movement.previous_stock
+
+        if not (is_damage or is_shrinkage):
+            return None
+
+        # Works for both cases: a write-off reduces stock by the damaged
+        # quantity, an audit reduces it by whatever was missing.
+        lost_quantity = movement.previous_stock - movement.new_stock
+        if lost_quantity <= 0:
+            return None
+
+        unit_cost = movement.product.purchase_price or movement.product.selling_price or Decimal('0.00')
+        financial_loss = (Decimal(str(lost_quantity)) * Decimal(str(unit_cost))).quantize(Decimal('0.01'))
+        if financial_loss <= Decimal('0.00'):
+            return None
+
+        reason = 'Damage / expiry write-off' if is_damage else 'Audit shrinkage'
+
+        try:
+            from accounting.services import AccountingIntegrationService
+            return AccountingIntegrationService.post_inventory_damage_loss(
+                product=movement.product,
+                warehouse=movement.warehouse,
+                batch_number=movement.batch_number,
+                quantity=lost_quantity,
+                financial_loss=financial_loss,
+                reference_no=movement.reference_no or f"MOV-{movement.id}",
+                notes=f"{reason}. {movement.notes or ''}".strip(),
+                user=user
+            )
+        except ValueError:
+            logger.exception(
+                "Failed to post inventory loss voucher for movement %s (%s, %s units of %s). "
+                "Stock was reduced but the loss was not booked to the General Ledger.",
+                movement.id, reason, lost_quantity, movement.product.name
+            )
+            return None
 
     @staticmethod
     def adjust_stock(product, warehouse, batch_number, new_quantity, reference_no="", notes="", user=None):

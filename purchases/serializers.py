@@ -17,10 +17,11 @@ User = get_user_model()
 
 class SimpleUserSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source='role.role_name', read_only=True)
+    full_name = serializers.CharField(source='display_name', read_only=True)
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'employee_id', 'email', 'contact', 'role_name')
+        fields = ('id', 'username', 'first_name', 'last_name', 'full_name', 'employee_id', 'email', 'contact', 'role_name')
 
 
 class SimpleAccountHeadSerializer(serializers.ModelSerializer):
@@ -128,8 +129,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     delivery_warehouse_details = WarehouseSerializer(source='delivery_warehouse', read_only=True)
     items = PurchaseOrderItemSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
     created_by_details = SimpleUserSerializer(source='created_by', read_only=True)
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.display_name', read_only=True)
     approved_by_details = SimpleUserSerializer(source='approved_by', read_only=True)
 
     class Meta:
@@ -156,9 +159,11 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             'cancellation_reason',
             'created_by',
             'created_by_username',
+            'created_by_name',
             'created_by_details',
             'approved_by',
             'approved_by_username',
+            'approved_by_name',
             'approved_by_details',
             'approved_at',
             'created_at',
@@ -379,8 +384,10 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     purchase_order_number = serializers.CharField(source='purchase_order.purchase_order_number', read_only=True)
     letter_of_credit_number = serializers.CharField(source='letter_of_credit.letter_of_credit_number', read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
     created_by_details = SimpleUserSerializer(source='created_by', read_only=True)
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.display_name', read_only=True)
     approved_by_details = SimpleUserSerializer(source='approved_by', read_only=True)
     accounting_voucher_number = serializers.CharField(source='accounting_voucher.voucher_number', read_only=True)
 
@@ -403,9 +410,11 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
             'special_notes',
             'created_by',
             'created_by_username',
+            'created_by_name',
             'created_by_details',
             'approved_by',
             'approved_by_username',
+            'approved_by_name',
             'approved_by_details',
             'approved_at',
             'created_at',

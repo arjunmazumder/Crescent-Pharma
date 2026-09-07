@@ -25,6 +25,15 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return f"{self.username} ({self.employee_id or 'No ID'})"
 
+    @property
+    def display_name(self):
+        full = f"{self.first_name} {self.last_name}".strip()
+        return full if full else self.username
+
+    def get_full_name_or_username(self):
+        full = f"{self.first_name} {self.last_name}".strip()
+        return full if full else self.username
+
     def save(self, *args, **kwargs):
         if not self.employee_id or not str(self.employee_id).strip():
             # Auto-generate format: EMP-0001, EMP-0002, etc.
@@ -55,7 +64,10 @@ class CustomUser(AbstractUser):
         """
         if self.is_superuser:
             return ["all"]
-        perms = set(self.user_permissions.values_list('codename', flat=True))
+        # .all() reuses a prefetch cache when the caller set one up;
+        # .values_list() would always issue its own query, which on a user list
+        # meant two extra round trips per row.
+        perms = {p.codename for p in self.user_permissions.all()}
         if self.role and self.role.is_active:
-            perms.update(self.role.permissions.values_list('codename', flat=True))
-        return sorted(list(perms))
+            perms.update(p.codename for p in self.role.permissions.all())
+        return sorted(perms)

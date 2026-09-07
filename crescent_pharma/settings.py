@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 import environ
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -75,6 +77,56 @@ DATABASES = {
     'default': env.db('DATABASE_URL')
 }
 
+# The database is remote, so opening a connection costs a full network
+# round trip plus auth (~1.3s measured). Without CONN_MAX_AGE Django opens a
+# fresh one for every request and throws it away, so that cost is paid on each
+# call. Holding the connection open for 10 minutes per worker removes it from
+# all but the first request. CONN_HEALTH_CHECKS makes Django verify a pooled
+# connection is still alive before reusing it, so a server-side timeout
+# surfaces as a reconnect rather than an InterfaceError.
+DATABASES['default']['CONN_MAX_AGE'] = env.int('DB_CONN_MAX_AGE', 600)
+DATABASES['default']['CONN_HEALTH_CHECKS'] = True
+
+# CONN_MAX_AGE alone is not enough here. `runserver` calls
+# connections.close_all() after every request (see Django's
+# ThreadedWSGIServer.close_request), and any per-thread connection dies with
+# its thread, so in practice each request paid a fresh handshake - measured at
+# ~1.2s against this host (~220ms TCP plus ~900ms Postgres auth round trips).
+#
+# A psycopg3 pool lives above the request/thread cycle, so connections are
+# borrowed and returned instead of reopened. Enabled only when psycopg3 and
+# psycopg_pool are both importable, so an environment still on psycopg2 keeps
+# working on CONN_MAX_AGE alone rather than failing at startup.
+def _pooling_available():
+    try:
+        import psycopg  # noqa: F401
+        import psycopg_pool  # noqa: F401
+    except ImportError:
+        return False
+    return psycopg.__version__ >= '3'
+
+
+if env.bool('DB_USE_POOL', True) and _pooling_available():
+    DATABASES['default'].setdefault('OPTIONS', {})
+    DATABASES['default']['OPTIONS']['pool'] = {
+        'min_size': env.int('DB_POOL_MIN', 2),
+        'max_size': env.int('DB_POOL_MAX', 10),
+        'timeout': env.int('DB_POOL_TIMEOUT', 30),
+    }
+    # A pooled connection is owned by the pool, not by the request; Django
+    # requires CONN_MAX_AGE to be 0 so it hands the connection back each time.
+    DATABASES['default']['CONN_MAX_AGE'] = 0
+    # The pool already validates a connection before handing it out, so
+    # Django's own health-check ping would just add a round trip.
+    DATABASES['default']['CONN_HEALTH_CHECKS'] = False
+
+# The default hasher runs 1.5M PBKDF2 iterations, about 2.5 seconds per
+# password. The test suite creates users in setUp, which runs once per test
+# method, so that alone accounted for most of the suite's runtime. Production
+# keeps the strong hasher; only the test runner gets the fast one.
+if 'test' in sys.argv:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
@@ -87,14 +139,38 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        # WhiteNoise's manifest storage requires collectstatic to have run, so
+        # keep the plain backend in development where it usually has not.
+        'BACKEND': (
+            'django.contrib.staticfiles.storage.StaticFilesStorage'
+            if DEBUG
+            else 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+        ),
+    },
+}
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+from corsheaders.defaults import default_headers
 
 AUTH_USER_MODEL = 'users.CustomUser'
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-client-type',
+    'x-csrftoken',
+]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
+    'DEFAULT_PERMISSION_CLASSES': ('rest_framework.permissions.IsAuthenticated',),
     'DEFAULT_FILTER_BACKENDS': (
         'django_filters.rest_framework.DjangoFilterBackend',
         'rest_framework.filters.SearchFilter',
@@ -176,3 +252,6 @@ else:
         },
     }
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://server-crescentpharmabackend-l4ajai-5ed25b-62-84-177-235.sslip.io",
+]

@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 import datetime
 from django.db import transaction
@@ -17,6 +18,8 @@ from .models import (
 )
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -525,16 +528,16 @@ class ProductionBatchService:
 
                 entries = [
                     {
-                        'account_head_id': head_fg.id,
-                        'debit': total_material_cost,
-                        'credit': Decimal('0.00'),
-                        'narration': f"Finished goods inventory capitalized for Batch {batch.batch_number}"
+                        'account_id': head_fg.id,
+                        'debit_amount': total_material_cost,
+                        'credit_amount': Decimal('0.00'),
+                        'description': f"Finished goods inventory capitalized for Batch {batch.batch_number}"
                     },
                     {
-                        'account_head_id': head_rm.id,
-                        'debit': Decimal('0.00'),
-                        'credit': total_material_cost,
-                        'narration': f"Raw and packaging materials consumption for Batch {batch.batch_number}"
+                        'account_id': head_rm.id,
+                        'debit_amount': Decimal('0.00'),
+                        'credit_amount': total_material_cost,
+                        'description': f"Raw and packaging materials consumption for Batch {batch.batch_number}"
                     }
                 ]
 
@@ -552,9 +555,12 @@ class ProductionBatchService:
                 )
                 transfer.accounting_voucher = voucher
                 transfer.save()
-            except Exception as e:
-                # Log or tolerate if accounting period closed during test/isolated environments
-                pass
+            except ValueError:
+                logger.exception(
+                    "Failed to post manufacturing cost voucher for batch %s (transfer %s). "
+                    "Finished goods entered stock but were not capitalized in the General Ledger.",
+                    batch.batch_number, transfer.transfer_code
+                )
 
             return transfer
 
@@ -645,7 +651,7 @@ class ProductionReportService:
                 'yield_percentage': b.yield_percentage,
                 'status': b.status,
                 'current_stage': b.current_stage,
-                'supervisor_name': b.assigned_supervisor.get_full_name() if b.assigned_supervisor else None,
+                'supervisor_name': b.assigned_supervisor.display_name if b.assigned_supervisor else None,
                 'manufacturing_date': b.manufacturing_date,
                 'expiry_date': b.expiry_date
             })
@@ -700,8 +706,8 @@ class ProductionReportService:
                     'wastage_quantity': item.wastage_quantity,
                     'returned_quantity': item.returned_quantity,
                     'unit': item.material.unit,
-                    'issued_by': slip.issued_by.get_full_name() if slip.issued_by else None,
-                    'received_by': slip.received_by.get_full_name() if slip.received_by else None,
+                    'issued_by': slip.issued_by.display_name if slip.issued_by else None,
+                    'received_by': slip.received_by.display_name if slip.received_by else None,
                 })
 
         # 2. IPQC Stage Logs
@@ -715,7 +721,7 @@ class ProductionReportService:
                 'started_at': log.started_at,
                 'completed_at': log.completed_at,
                 'status': log.status,
-                'operator_name': log.operator.get_full_name() if log.operator else None,
+                'operator_name': log.operator.display_name if log.operator else None,
                 'machine_name': log.machine_equipment_name,
                 'temperature_celsius': log.temperature_celsius,
                 'humidity_percentage': log.humidity_percentage,
@@ -736,7 +742,7 @@ class ProductionReportService:
                 'transfer_quantity': t.transfer_quantity,
                 'qc_release_certificate_number': t.qc_release_certificate_number,
                 'is_received': t.is_received,
-                'received_by': t.received_by.get_full_name() if t.received_by else None,
+                'received_by': t.received_by.display_name if t.received_by else None,
                 'received_at': t.received_at,
                 'voucher_number': t.accounting_voucher.voucher_number if t.accounting_voucher else None
             })
@@ -775,8 +781,8 @@ class ProductionReportService:
                 'expiry_date': batch.expiry_date,
                 'status': batch.status,
                 'current_stage': batch.current_stage,
-                'assigned_supervisor': batch.assigned_supervisor.get_full_name() if batch.assigned_supervisor else None,
-                'operators': [op.get_full_name() for op in batch.assigned_operators.all()],
+                'assigned_supervisor': batch.assigned_supervisor.display_name if batch.assigned_supervisor else None,
+                'operators': [op.display_name for op in batch.assigned_operators.all()],
                 'created_at': batch.created_at
             },
             'inventory_status': {

@@ -25,10 +25,12 @@ class UserSerializer(serializers.ModelSerializer):
     extra_permissions_details = PermissionSerializer(source='user_permissions', many=True, read_only=True)
     effective_permissions = serializers.SerializerMethodField(read_only=True)
 
+    full_name = serializers.CharField(source='display_name', read_only=True)
+
     class Meta:
         model = User
         fields = (
-            'id', 'username', 'password', 'email', 'is_superuser', 'is_staff',
+            'id', 'username', 'first_name', 'last_name', 'full_name', 'password', 'email', 'is_superuser', 'is_staff',
             'employee_id', 'role', 'role_name',
             'user_permissions', 'role_permissions', 'extra_permissions_details',
             'effective_permissions', 'contact', 'address', 'date_of_birth',

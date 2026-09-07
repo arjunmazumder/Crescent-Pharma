@@ -1,3 +1,4 @@
+import logging
 import datetime
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets, permissions, status
@@ -10,18 +11,57 @@ from core.models import Role
 from hr.models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest, UserLocationLog, UserCurrentLocation
+    LeaveRequest, UserLocationLog, UserCurrentLocation,
+    TAComponent, EmployeeTARate, AllowanceBill, BonusType
 )
-from hr.services import AttendanceService, PayrollService, LeaveService, TrackingService
+from hr.services import (
+    AttendanceService, PayrollService, LeaveService, TrackingService,
+    TAConfigService, AllowanceBillService
+)
 from hr.serializers import (
     HolidaySerializer, WeekendConfigSerializer,
     OfficeLocationSerializer, SalaryStructureSerializer, PayrollApprovalSerializer,
     AttendanceSerializer, PayrollSerializer, LoanSerializer, TourAllowanceSerializer,
     LeaveRequestSerializer, UserLocationPingSerializer, UserLocationBatchSyncSerializer,
-    UserCurrentLocationSerializer, UserLocationLogSerializer
+    UserCurrentLocationSerializer, UserLocationLogSerializer,
+    TAComponentSerializer, EmployeeTARateSerializer, AllowanceBillSerializer,
+    AllowanceBillGenerateSerializer, AllowanceBillRejectSerializer,
+    BonusTypeSerializer
 )
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
+
+
+
+def _resolve_bonus_request(request):
+    """
+    Reads the with-bonus / without-bonus choice off a payroll generate request.
+    Returns (include_bonus, bonus_type) or raises ValueError with a readable message.
+    """
+    raw = request.data.get('includeBonus')
+    if raw is None:
+        raw = request.data.get('include_bonus')
+    include_bonus = str(raw).strip().lower() in ('true', '1', 'yes') if raw is not None else False
+
+    if not include_bonus:
+        return False, None
+
+    bonus_type_id = request.data.get('bonusTypeId') or request.data.get('bonus_type_id')
+    if bonus_type_id:
+        bonus_type = BonusType.objects.filter(id=bonus_type_id, is_active=True).first()
+        if not bonus_type:
+            raise ValueError(f"Active bonus type with ID {bonus_type_id} not found.")
+        return True, bonus_type
+
+    # No type given: fall back only when the choice is unambiguous.
+    active = list(BonusType.objects.filter(is_active=True)[:2])
+    if not active:
+        raise ValueError("Cannot include a bonus: no active bonus type is configured.")
+    if len(active) > 1:
+        raise ValueError("More than one active bonus type exists. Send bonusTypeId to choose one.")
+    return True, active[0]
 
 
 @extend_schema(tags=['HR - Attendance'])
@@ -304,13 +344,20 @@ class PayrollViewSet(viewsets.ModelViewSet):
         approver_role = Role.objects.filter(id=approver_role_id).first() if approver_role_id else None
 
         try:
+            include_bonus, bonus_type = _resolve_bonus_request(request)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
             target_user = User.objects.get(id=user_id)
             payroll = PayrollService.calculate_user_payroll(
                 user=target_user,
                 month=int(month),
                 year=int(year),
                 generated_by=request.user,
-                current_approver_role=approver_role
+                current_approver_role=approver_role,
+                include_bonus=include_bonus,
+                bonus_type=bonus_type
             )
             return Response({
                 'message': f"Monthly payroll calculated successfully for {target_user.username}",
@@ -345,6 +392,12 @@ class PayrollViewSet(viewsets.ModelViewSet):
         month = int(month)
         year = int(year)
         approver_role = Role.objects.filter(id=approver_role_id).first() if approver_role_id else None
+
+        try:
+            include_bonus, bonus_type = _resolve_bonus_request(request)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         employees = User.objects.filter(is_active=True, salary_structures__isnull=False).distinct()
         
         generated = []
@@ -352,7 +405,11 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         for emp in employees:
             try:
-                p = PayrollService.calculate_user_payroll(emp, month, year, generated_by=request.user, current_approver_role=approver_role)
+                p = PayrollService.calculate_user_payroll(
+                    emp, month, year, generated_by=request.user,
+                    current_approver_role=approver_role,
+                    include_bonus=include_bonus, bonus_type=bonus_type
+                )
                 generated.append(PayrollSerializer(p).data)
             except Exception as e:
                 errors.append({'userId': emp.id, 'username': emp.username, 'error': str(e)})
@@ -397,8 +454,12 @@ class PayrollViewSet(viewsets.ModelViewSet):
         try:
             from accounting.services import AccountingIntegrationService
             AccountingIntegrationService.post_payroll_disbursement(payroll=payroll, user=request.user)
-        except Exception:
-            pass
+        except ValueError:
+            logger.exception(
+                "Failed to post payroll voucher for %s (%s/%s). "
+                "The payroll was marked PAID but the General Ledger was not updated.",
+                payroll.user.username, payroll.month, payroll.year
+            )
 
         return Response({
             'message': f"Payroll for {payroll.user.username} marked as Paid.",
@@ -778,3 +839,257 @@ class TrackingViewSet(viewsets.ViewSet):
         route_data = TrackingService.get_mpo_route(user=target_user, date_param=date_param)
         return Response(route_data, status=status.HTTP_200_OK)
 
+
+# -----------------------------------------------------------------------------
+# TA Configuration & Monthly TA/DA Bill
+# -----------------------------------------------------------------------------
+
+@extend_schema(tags=['HR - TA/DA Allowances'])
+class TAComponentViewSet(viewsets.ModelViewSet):
+    queryset = TAComponent.objects.all().order_by('display_order', 'code')
+    serializer_class = TAComponentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['code', 'name', 'description']
+    filterset_fields = ['is_active']
+    ordering_fields = ['display_order', 'code', 'name']
+    ordering = ['display_order', 'code']
+
+
+@extend_schema(tags=['HR - TA/DA Allowances'])
+class EmployeeTARateViewSet(viewsets.ModelViewSet):
+    queryset = EmployeeTARate.objects.all().select_related('user', 'component').order_by(
+        'user', 'component', '-effective_from'
+    )
+    serializer_class = EmployeeTARateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['user__username', 'user__employee_id', 'component__code', 'component__name']
+    filterset_fields = ['user', 'component', 'is_active', 'effective_from']
+    ordering_fields = ['effective_from', 'daily_amount', 'id']
+
+    @extend_schema(
+        summary='Effective TA Rates for an Employee',
+        description='Returns the rate in force per component on a date, with the daily total.',
+        parameters=[
+            OpenApiParameter('user_id', int, required=False, description='Defaults to the logged-in user'),
+            OpenApiParameter('on_date', str, required=False, description='YYYY-MM-DD, defaults to today'),
+        ]
+    )
+    @action(detail=False, methods=['get'], url_path='effective')
+    def effective(self, request):
+        user_id = request.query_params.get('user_id') or request.query_params.get('userId')
+        target_user = request.user
+        if user_id:
+            if str(request.user.id) != str(user_id) and not (request.user.is_superuser or request.user.is_staff):
+                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            target_user = User.objects.filter(id=user_id).first()
+            if not target_user:
+                return Response({'error': f'User {user_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        on_date_str = request.query_params.get('on_date') or request.query_params.get('onDate')
+        on_date = parse_date(on_date_str) if on_date_str else timezone.now().date()
+
+        rates = TAConfigService.get_effective_rates(target_user, on_date=on_date)
+        return Response({
+            'userId': target_user.id,
+            'username': target_user.username,
+            'onDate': str(on_date),
+            'totalDailyRate': str(TAConfigService.get_total_daily_rate(target_user, on_date=on_date)),
+            'rates': EmployeeTARateSerializer(rates, many=True).data
+        }, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=['HR - TA/DA Allowances'])
+class AllowanceBillViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Monthly TA/DA bills. Bills are generated from attendance and approved tours
+    rather than posted directly, so there is no create endpoint - use generate.
+    """
+    queryset = AllowanceBill.objects.all().select_related(
+        'user', 'generated_by', 'approved_by', 'accounting_voucher'
+    ).prefetch_related('lines__component', 'lines__tour_allowance').order_by('-year', '-month', '-id')
+    serializer_class = AllowanceBillSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['bill_number', 'user__username', 'user__employee_id', 'notes']
+    filterset_fields = ['user', 'month', 'year', 'status']
+    ordering_fields = ['year', 'month', 'total_amount', 'id']
+
+    def get_queryset(self):
+        if self.request.user.is_superuser or self.request.user.is_staff:
+            return self.queryset
+        return self.queryset.filter(user=self.request.user)
+
+    def _is_manager(self, request):
+        perms = request.user.get_effective_permissions()
+        return (
+            request.user.is_superuser
+            or request.user.is_staff
+            or 'change_allowancebill' in perms
+            or 'all' in perms
+        )
+
+    @extend_schema(
+        summary='Get the TA/DA Bills of the Logged-in Employee',
+        responses={200: AllowanceBillSerializer(many=True)}
+    )
+    @action(detail=False, methods=['get'], url_path='my-bills')
+    def my_bills(self, request):
+        qs = AllowanceBill.objects.filter(user=request.user).select_related(
+            'user', 'approved_by', 'accounting_voucher'
+        ).prefetch_related('lines__component').order_by('-year', '-month')
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            return self.get_paginated_response(AllowanceBillSerializer(page, many=True).data)
+        return Response(AllowanceBillSerializer(qs, many=True).data)
+
+    @extend_schema(
+        summary='Generate a TA/DA Bill for One Employee',
+        description='Rebuilds the month from attendance, TA rates and approved tours. '
+                    'Refuses to overwrite an APPROVED or PAID bill.',
+        request=AllowanceBillGenerateSerializer,
+        responses={200: AllowanceBillSerializer}
+    )
+    @action(detail=False, methods=['post'], url_path='generate')
+    def generate(self, request):
+        if not self._is_manager(request):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = AllowanceBillGenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if not data.get('user_id'):
+            return Response({'error': 'userId is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        target_user = User.objects.filter(id=data['user_id']).first()
+        if not target_user:
+            return Response({'error': f"User {data['user_id']} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            bill = AllowanceBillService.generate(
+                user=target_user, month=data['month'], year=data['year'],
+                generated_by=request.user
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': f"TA/DA bill generated for {target_user.username} ({data['month']}/{data['year']}).",
+            'data': AllowanceBillSerializer(bill).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary='Generate TA/DA Bills for All Employees with Configured Rates',
+        request=AllowanceBillGenerateSerializer,
+    )
+    @action(detail=False, methods=['post'], url_path='generate-all')
+    def generate_all(self, request):
+        if not self._is_manager(request):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = AllowanceBillGenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        month = serializer.validated_data['month']
+        year = serializer.validated_data['year']
+
+        employees = User.objects.filter(is_active=True, ta_rates__isnull=False).distinct()
+
+        generated, errors = [], []
+        for emp in employees:
+            try:
+                bill = AllowanceBillService.generate(emp, month, year, generated_by=request.user)
+                generated.append(AllowanceBillSerializer(bill).data)
+            except ValueError as e:
+                errors.append({'userId': emp.id, 'username': emp.username, 'error': str(e)})
+
+        return Response({
+            'message': f"Generated {len(generated)} TA/DA bill(s) for {month}/{year}.",
+            'totalGenerated': len(generated),
+            'bills': generated,
+            'errors': errors
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(summary='Approve a TA/DA Bill', request=None, responses={200: AllowanceBillSerializer})
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
+        bill = self.get_object()
+        if not self._is_manager(request):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if bill.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot approve your own TA/DA bill.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        try:
+            bill = AllowanceBillService.approve(
+                bill, approved_by=request.user, notes=request.data.get('notes', '')
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': f"TA/DA bill {bill.bill_number} approved.",
+            'data': AllowanceBillSerializer(bill).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(summary='Reject a TA/DA Bill', request=AllowanceBillRejectSerializer)
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject(self, request, pk=None):
+        bill = self.get_object()
+        if not self._is_manager(request):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if bill.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot reject your own TA/DA bill.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        serializer = AllowanceBillRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            bill = AllowanceBillService.reject(
+                bill, rejected_by=request.user,
+                reason=serializer.validated_data.get('reason', '')
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': f"TA/DA bill {bill.bill_number} rejected.",
+            'data': AllowanceBillSerializer(bill).data
+        }, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary='Disburse a TA/DA Bill (posts Dr 6120 / Cr 1112)',
+        request=None,
+        responses={200: AllowanceBillSerializer}
+    )
+    @action(detail=True, methods=['post'], url_path='disburse')
+    def disburse(self, request, pk=None):
+        bill = self.get_object()
+        if not self._is_manager(request):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        if bill.user == request.user and not request.user.is_superuser:
+            return Response(
+                {'error': 'Security restriction: You cannot disburse your own TA/DA bill.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        try:
+            bill = AllowanceBillService.disburse(bill, user=request.user)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': f"TA/DA bill {bill.bill_number} disbursed and posted to the General Ledger.",
+            'data': AllowanceBillSerializer(bill).data
+        }, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=['HR - Payroll'])
+class BonusTypeViewSet(viewsets.ModelViewSet):
+    """Festival bonus heads. The percentage is applied to basic salary."""
+    queryset = BonusType.objects.all().order_by('display_order', 'code')
+    serializer_class = BonusTypeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['code', 'name', 'description']
+    filterset_fields = ['is_active']
+    ordering_fields = ['display_order', 'code', 'percentage_of_basic']
+    ordering = ['display_order', 'code']

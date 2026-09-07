@@ -31,16 +31,24 @@ class CustomerSerializer(serializers.ModelSerializer):
         read_only_fields = ('customer_code', 'created_at', 'updated_at')
 
     def get_total_orders(self, obj):
-        return obj.orders.count()
+        # orders is prefetched by the viewset; .count()/.filter() on the manager
+        # would each cost an extra query per customer.
+        return len(obj.orders.all())
 
     def get_total_delivered_orders(self, obj):
-        return obj.orders.filter(status='DELIVERED').count()
+        return sum(1 for order in obj.orders.all() if order.status == 'DELIVERED')
 
 
 class SimpleCustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ('id', 'customer_code', 'name', 'proprietor_name', 'phone', 'customer_type', 'city', 'address')
+        # drug_license_no and its expiry are printed on a pharmaceutical
+        # invoice, so they must travel with every embedded customer.
+        fields = (
+            'id', 'customer_code', 'name', 'proprietor_name', 'phone',
+            'customer_type', 'city', 'address',
+            'drug_license_no', 'drug_license_expiry_date',
+        )
 
 
 class CustomerOrderItemSerializer(serializers.ModelSerializer):
@@ -93,6 +101,7 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
     delivery_branch = SimpleWarehouseSerializer(read_only=True)
     items = CustomerOrderItemSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
     items_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -120,6 +129,7 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
             'notes',
             'cancellation_reason',
             'created_by_username',
+            'created_by_name',
             'items_count',
             'items',
             'created_at',
@@ -128,10 +138,14 @@ class CustomerOrderSerializer(serializers.ModelSerializer):
         read_only_fields = ('order_number', 'booking_reference_number', 'subtotal', 'tax_amount', 'total_amount', 'created_at', 'updated_at')
 
     def get_items_count(self, obj):
-        return obj.items.count()
+        return len(obj.items.all())
 
 
 class CustomerOrderCreateSerializer(serializers.Serializer):
+    as_draft = serializers.BooleanField(
+        required=False, default=False,
+        help_text='Save as an editable draft. A draft reserves no stock.'
+    )
     customer_id = serializers.IntegerField(help_text='Customer / Pharmacy ID (e.g. 1)')
     order_date = serializers.DateField(required=False, help_text='Order Date (YYYY-MM-DD)')
     delivery_date = serializers.DateField(required=False, allow_null=True, help_text='Expected Delivery Date (YYYY-MM-DD)')
@@ -175,3 +189,14 @@ class OrderCancelSerializer(serializers.Serializer):
             if 'cancellationReason' in data and 'cancellation_reason' not in data:
                 data['cancellation_reason'] = data['cancellationReason']
         return super().to_internal_value(data)
+
+
+class DraftUpdateSerializer(serializers.Serializer):
+    """Every field optional: a draft is edited a piece at a time."""
+    items = serializers.ListField(child=serializers.DictField(), required=False)
+    discount_percentage = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    discount_flat = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    payment_method = serializers.CharField(required=False)
+    shipping_address = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    delivery_date = serializers.DateField(required=False, allow_null=True)

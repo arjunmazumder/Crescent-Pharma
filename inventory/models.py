@@ -193,6 +193,13 @@ class StockMovement(models.Model):
     class Meta:
         db_table = 'stock_movements'
         ordering = ['-created_at']
+        indexes = [
+            # Default ordering is by created_at, and the ledger view filters
+            # a product's movements over time.
+            models.Index(fields=['-created_at'], name='stockmove_created_idx'),
+            models.Index(fields=['product', 'warehouse', '-created_at'],
+                         name='stockmove_prod_wh_date_idx'),
+        ]
 
     def __str__(self):
         return f"{self.movement_type}: {self.product.name} ({self.quantity}) @ {self.warehouse.name}"

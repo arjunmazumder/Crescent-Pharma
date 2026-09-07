@@ -19,7 +19,11 @@ from inventory.serializers import (
 
 @extend_schema(tags=['Products & Categories'])
 class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.all().select_related('parent').prefetch_related('subcategories', 'products').order_by('display_order', 'name')
+    queryset = Category.objects.all().select_related('parent').prefetch_related(
+        'products',
+        'subcategories__products',
+        'subcategories__subcategories__products',
+    ).order_by('display_order', 'name')
     serializer_class = CategorySerializer
     permission_classes = [permissions.IsAuthenticated]
     search_fields = ['name', 'code', 'description']

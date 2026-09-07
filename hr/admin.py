@@ -2,7 +2,8 @@ from django.contrib import admin
 from .models import (
     Holiday, WeekendConfig, OfficeLocation, Attendance,
     SalaryStructure, Payroll, PayrollApproval, Loan, TourAllowance,
-    LeaveRequest, UserLocationLog, UserCurrentLocation
+    LeaveRequest, UserLocationLog, UserCurrentLocation,
+    TAComponent, EmployeeTARate, AllowanceBill, AllowanceBillLine, BonusType
 )
 
 @admin.register(Attendance)
@@ -45,13 +46,57 @@ class PayrollApprovalAdmin(admin.ModelAdmin):
 class LoanAdmin(admin.ModelAdmin):
     list_display = ('user', 'amount', 'emi_amount', 'remaining_amount', 'deduction_start_date', 'status', 'created_at')
     list_filter = ('status', 'deduction_start_date')
-    search_fields = ('user__username', 'user__employee_id')
+    search_fields = ('user__username', 'user__employee_id', 'note')
 
 @admin.register(TourAllowance)
 class TourAllowanceAdmin(admin.ModelAdmin):
     list_display = ('user', 'date', 'from_location', 'to_location', 'mode_of_journey', 'total_amount', 'status', 'created_at')
     list_filter = ('status', 'date')
     search_fields = ('user__username', 'user__employee_id', 'from_location', 'to_location')
+
+@admin.register(TAComponent)
+class TAComponentAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'display_order', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('code', 'name', 'description')
+    ordering = ('display_order', 'code')
+
+
+@admin.register(EmployeeTARate)
+class EmployeeTARateAdmin(admin.ModelAdmin):
+    list_display = ('user', 'component', 'daily_amount', 'effective_from', 'is_active')
+    list_filter = ('component', 'is_active', 'effective_from')
+    search_fields = ('user__username', 'user__employee_id', 'component__code', 'component__name')
+    autocomplete_fields = ('component',)
+    ordering = ('user', 'component', '-effective_from')
+
+
+class AllowanceBillLineInline(admin.TabularInline):
+    model = AllowanceBillLine
+    extra = 0
+    readonly_fields = ('source', 'component', 'tour_allowance', 'days', 'rate', 'amount', 'description')
+    can_delete = False
+
+
+@admin.register(AllowanceBill)
+class AllowanceBillAdmin(admin.ModelAdmin):
+    list_display = ('bill_number', 'user', 'month', 'year', 'eligible_days',
+                    'total_daily_ta', 'total_tour_da', 'total_amount', 'status')
+    list_filter = ('status', 'year', 'month')
+    search_fields = ('bill_number', 'user__username', 'user__employee_id', 'notes')
+    readonly_fields = ('bill_number', 'eligible_days', 'total_daily_ta',
+                       'total_tour_da', 'total_amount', 'accounting_voucher')
+    inlines = [AllowanceBillLineInline]
+    ordering = ('-year', '-month', '-id')
+
+
+@admin.register(BonusType)
+class BonusTypeAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'percentage_of_basic', 'display_order', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('code', 'name', 'description')
+    ordering = ('display_order', 'code')
+
 
 admin.site.register(Holiday)
 admin.site.register(WeekendConfig)

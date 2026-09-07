@@ -6,7 +6,8 @@ from sales.models import Customer, CustomerOrder, PaymentMethod
 from sales.services import OrderService
 from sales.serializers import (
     CustomerSerializer, CustomerOrderSerializer,
-    CustomerOrderCreateSerializer, OrderCancelSerializer
+    CustomerOrderCreateSerializer, OrderCancelSerializer,
+    DraftUpdateSerializer
 )
 
 
@@ -122,7 +123,8 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
                 is_branch_booking=data.get('is_branch_booking', False),
                 delivery_branch=delivery_branch,
                 booking_notes=data.get('booking_notes', ''),
-                notes=data.get('notes', '')
+                notes=data.get('notes', ''),
+                as_draft=data.get('as_draft', False)
             )
             return Response(CustomerOrderSerializer(order).data, status=status.HTTP_201_CREATED)
         except Customer.DoesNotExist:
@@ -191,3 +193,54 @@ class CustomerOrderViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        tags=['Customers & Sales Orders'],
+        summary="Get the Logged-in Officer's Saved Drafts",
+        description='In-progress bills saved mid-negotiation, newest first.'
+    )
+    @action(detail=False, methods=['get'], url_path='my-drafts')
+    def my_drafts(self, request):
+        from sales.models import OrderStatus
+        drafts = CustomerOrder.objects.filter(
+            created_by=request.user, status=OrderStatus.DRAFT
+        ).select_related('customer').prefetch_related('items__product').order_by('-id')
+        page = self.paginate_queryset(drafts)
+        if page is not None:
+            return self.get_paginated_response(CustomerOrderSerializer(page, many=True).data)
+        return Response(CustomerOrderSerializer(drafts, many=True).data)
+
+    @extend_schema(
+        tags=['Customers & Sales Orders'],
+        summary='Edit a Saved Draft',
+        description='Change items, discounts or delivery details on a draft and recompute its totals. '
+                    'Only DRAFT orders can be edited.',
+        request=DraftUpdateSerializer,
+        responses={200: CustomerOrderSerializer}
+    )
+    @action(detail=True, methods=['patch', 'put'], url_path='update-draft')
+    def update_draft(self, request, pk=None):
+        order = self.get_object()
+        serializer = DraftUpdateSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        try:
+            updated = OrderService.update_draft(
+                order=order,
+                items_data=data.get('items'),
+                discount_percentage=data.get('discount_percentage'),
+                discount_flat=data.get('discount_flat'),
+                payment_method=data.get('payment_method'),
+                shipping_address=data.get('shipping_address'),
+                notes=data.get('notes'),
+                delivery_date=data.get('delivery_date'),
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': f"Draft {updated.order_number} updated.",
+            'data': CustomerOrderSerializer(updated).data
+        }, status=status.HTTP_200_OK)

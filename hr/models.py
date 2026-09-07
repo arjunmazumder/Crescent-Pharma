@@ -1,5 +1,10 @@
-from django.db import models
+import re
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
 from django.conf import settings
+from django.utils import timezone
 from core.models import Lookup, Role
 
 class Holiday(models.Model):
@@ -81,12 +86,299 @@ class SalaryStructure(models.Model):
     transport_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     medical_benefits = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     utility_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    daily_ta_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    daily_ta_allowance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text=(
+            "DEPRECATED. Superseded by per-employee, per-component rates in EmployeeTARate. "
+            "Retained for historical reference only; payroll no longer reads this field."
+        )
+    )
     effective_from = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'salary_structures'
+
+
+class TAComponent(models.Model):
+    """
+    Catalogue of travelling-allowance heads an employee can be paid per working
+    day, e.g. Transport, Meal, Hotel. Admin-managed, so new heads can be added
+    without a schema change.
+    """
+    code = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Short stable identifier, e.g. TRANSPORT, MEAL, HOTEL"
+    )
+    name = models.CharField(max_length=150)
+    description = models.TextField(null=True, blank=True)
+    display_order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ta_components'
+        ordering = ['display_order', 'code']
+        verbose_name = "TA Component"
+        verbose_name_plural = "TA Components"
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+    def save(self, *args, **kwargs):
+        if self.code:
+            self.code = self.code.strip().upper().replace(' ', '_')
+        super().save(*args, **kwargs)
+
+
+class EmployeeTARate(models.Model):
+    """
+    The daily amount a specific employee earns for a specific TA component.
+    Effective-dated the same way SalaryStructure is, so raising a rate keeps
+    the earlier one intact for past months.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='ta_rates'
+    )
+    component = models.ForeignKey(
+        TAComponent,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employee_rates'
+    )
+    daily_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Amount earned per eligible working day for this component"
+    )
+    effective_from = models.DateField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'employee_ta_rates'
+        unique_together = ('user', 'component', 'effective_from')
+        ordering = ['user', 'component', '-effective_from']
+        verbose_name = "Employee TA Rate"
+        verbose_name_plural = "Employee TA Rates"
+
+    def __str__(self):
+        comp_name = self.component.code if self.component else "General TA"
+        return f"{self.user.username} - {comp_name}: {self.daily_amount}/day from {self.effective_from}"
+
+    def clean(self):
+        if self.daily_amount is not None and self.daily_amount < 0:
+            raise ValidationError({'daily_amount': "Daily amount cannot be negative."})
+
+
+class AllowanceBill(models.Model):
+    """
+    One month's TA and DA for one employee, paid separately from the payslip.
+
+    TA comes from the employee's configured component rates multiplied by the
+    days actually worked; DA comes from approved tour allowances. Holidays and
+    weekly off-days earn neither.
+    """
+
+    STATUS_CHOICES = {
+        'DRAFT': 'Draft',
+        'PENDING_APPROVAL': 'Pending Approval',
+        'APPROVED': 'Approved',
+        'PAID': 'Paid',
+        'REJECTED': 'Rejected',
+    }
+
+    # Statuses that must never be silently overwritten by regeneration.
+    SETTLED_STATUSES = ('Approved', 'Paid')
+
+    bill_number = models.CharField(max_length=50, unique=True, blank=True, db_index=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='allowance_bills'
+    )
+    month = models.IntegerField()
+    year = models.IntegerField()
+    status = models.CharField(
+        max_length=50,
+        choices=[(value, value) for value in STATUS_CHOICES.values()],
+        default=STATUS_CHOICES['DRAFT']
+    )
+    eligible_days = models.IntegerField(
+        default=0,
+        help_text="Days actually worked, excluding holidays, off-days, leave and absence"
+    )
+    total_daily_ta = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total_tour_da = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    accounting_voucher = models.ForeignKey(
+        'accounting.Voucher',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='allowance_bill_vouchers'
+    )
+    notes = models.TextField(null=True, blank=True)
+    rejection_reason = models.TextField(null=True, blank=True)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='generated_allowance_bills'
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='approved_allowance_bills'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'allowance_bills'
+        unique_together = ('user', 'month', 'year')
+        ordering = ['-year', '-month', '-id']
+        verbose_name = "TA/DA Bill"
+        verbose_name_plural = "TA/DA Bills"
+
+    def __str__(self):
+        return f"{self.bill_number} - {self.user.username} ({self.month}/{self.year}) [{self.status}]"
+
+    @property
+    def is_settled(self):
+        return self.status in self.SETTLED_STATUSES
+
+    def save(self, *args, **kwargs):
+        if not self.bill_number:
+            year = self.year or timezone.now().year
+            prefix = f"TADA-{year}-"
+            with transaction.atomic():
+                # Single aggregate rather than scanning the table in Python,
+                # which is how the older models in this project do it.
+                last = (
+                    AllowanceBill.objects
+                    .select_for_update()
+                    .filter(bill_number__startswith=prefix)
+                    .aggregate(highest=models.Max('bill_number'))['highest']
+                )
+                next_number = 1
+                if last:
+                    match = re.search(r'TADA-\d+-(\d+)$', last)
+                    if match:
+                        next_number = int(match.group(1)) + 1
+
+                candidate = f"{prefix}{next_number:04d}"
+                while AllowanceBill.objects.filter(bill_number=candidate).exclude(pk=self.pk).exists():
+                    next_number += 1
+                    candidate = f"{prefix}{next_number:04d}"
+                self.bill_number = candidate
+
+        super().save(*args, **kwargs)
+
+
+class AllowanceBillLine(models.Model):
+    """A single readable row on the bill: one TA component, or one tour."""
+
+    SOURCE_CHOICES = {
+        'DAILY_RATE': 'Daily TA Component',
+        'TOUR': 'Tour Allowance (DA)',
+    }
+
+    bill = models.ForeignKey(
+        AllowanceBill,
+        on_delete=models.CASCADE,
+        related_name='lines'
+    )
+    source = models.CharField(
+        max_length=50,
+        choices=[(value, value) for value in SOURCE_CHOICES.values()],
+        default=SOURCE_CHOICES['DAILY_RATE']
+    )
+    component = models.ForeignKey(
+        TAComponent,
+        on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='bill_lines',
+        help_text="Set for daily TA lines; empty for tour lines"
+    )
+    tour_allowance = models.ForeignKey(
+        # String reference: TourAllowance is declared later in this module.
+        'hr.TourAllowance',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='bill_lines',
+        help_text="Set for tour DA lines; empty for daily TA lines"
+    )
+    days = models.IntegerField(default=0)
+    rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    description = models.CharField(max_length=255, null=True, blank=True)
+
+    class Meta:
+        db_table = 'allowance_bill_lines'
+        ordering = ['source', 'id']
+        verbose_name = "TA/DA Bill Line"
+        verbose_name_plural = "TA/DA Bill Lines"
+
+    def __str__(self):
+        return f"{self.bill.bill_number}: {self.description or self.source} = {self.amount}"
+
+class BonusType(models.Model):
+    """
+    A festival bonus, paid as a percentage of basic salary.
+
+    Eid dates move with the lunar calendar, so there is no fixed month. The
+    admin decides at payroll generation time whether that month's payroll
+    carries a bonus and which one.
+    """
+    code = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Short stable identifier, e.g. EID_UL_FITR, EID_UL_ADHA"
+    )
+    name = models.CharField(max_length=150)
+    percentage_of_basic = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal('100.00'),
+        help_text="Percentage of basic salary paid as bonus, e.g. 100.00"
+    )
+    description = models.TextField(null=True, blank=True)
+    display_order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'bonus_types'
+        ordering = ['display_order', 'code']
+        verbose_name = "Bonus Type"
+        verbose_name_plural = "Bonus Types"
+
+    def __str__(self):
+        return f"{self.name} ({self.percentage_of_basic}% of basic)"
+
+    def save(self, *args, **kwargs):
+        if self.code:
+            self.code = self.code.strip().upper().replace(' ', '_')
+        super().save(*args, **kwargs)
+
+    def clean(self):
+        if self.percentage_of_basic is not None and self.percentage_of_basic < 0:
+            raise ValidationError({'percentage_of_basic': "Percentage cannot be negative."})
+
 
 class Payroll(models.Model):
     STATUS_CHOICES = {
@@ -117,9 +409,31 @@ class Payroll(models.Model):
     per_day_salary = models.DecimalField(max_digits=12, decimal_places=2)
     per_hour_salary = models.DecimalField(max_digits=12, decimal_places=2)
     unpaid_deduction = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    total_ta_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    total_tour_allowance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_ta_allowance = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        help_text="DEPRECATED. TA is paid on AllowanceBill; always 0 on new payrolls."
+    )
+    total_tour_allowance = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        help_text="DEPRECATED. Tour DA is paid on AllowanceBill; always 0 on new payrolls."
+    )
     loan_deduction = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    bonus_type = models.ForeignKey(
+        BonusType,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payrolls',
+        help_text="Set when this payroll was generated with a festival bonus"
+    )
+    bonus_percentage = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0,
+        help_text="Rate used at generation time. Kept as a snapshot so changing "
+                  "the BonusType later does not rewrite past payslips."
+    )
+    total_bonus = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -156,7 +470,11 @@ class Loan(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='loans')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    emi_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    emi_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="Fixed amount deducted from the employee's salary every month. Set by the admin."
+    )
     total_months = models.IntegerField()
     remaining_amount = models.DecimalField(max_digits=12, decimal_places=2)
     deduction_start_date = models.DateField()
@@ -165,11 +483,64 @@ class Loan(models.Model):
         choices=[(value, value) for value in STATUS_CHOICES.values()],
         default=STATUS_CHOICES['ACTIVE']
     )
+    note = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Reason for the loan, agreed terms, or any administrative remarks"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'loans'
+        constraints = [
+            # An employee may hold only one open loan at a time. Enforced in the
+            # database so two concurrent requests cannot both pass the check.
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=models.Q(remaining_amount__gt=0),
+                name='unique_open_loan_per_user'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.amount} (Remaining: {self.remaining_amount}) [{self.status}]"
+
+    def clean(self):
+        errors = {}
+
+        if self.amount is not None and self.amount <= 0:
+            errors['amount'] = "Loan amount must be greater than zero."
+
+        if self.emi_amount is not None and self.emi_amount <= 0:
+            errors['emi_amount'] = "Monthly deduction amount must be greater than zero."
+
+        if self.amount is not None and self.emi_amount is not None and self.emi_amount > self.amount:
+            errors['emi_amount'] = (
+                f"Monthly deduction ({self.emi_amount}) cannot be greater than the loan amount ({self.amount})."
+            )
+
+        if self.amount is not None and self.remaining_amount is not None and self.remaining_amount > self.amount:
+            errors['remaining_amount'] = (
+                f"Remaining amount ({self.remaining_amount}) cannot be greater than the loan amount ({self.amount})."
+            )
+
+        # One open loan per employee. Mirrors the database constraint above, but
+        # produces a readable message instead of an IntegrityError.
+        if self.user_id and (self.remaining_amount is None or self.remaining_amount > 0):
+            open_loans = Loan.objects.filter(user_id=self.user_id, remaining_amount__gt=0)
+            if self.pk:
+                open_loans = open_loans.exclude(pk=self.pk)
+            existing = open_loans.first()
+            if existing:
+                errors['user'] = (
+                    f"This employee already has an open loan of {existing.amount} "
+                    f"with {existing.remaining_amount} still outstanding. "
+                    "A new loan can only be issued once the existing one is fully repaid."
+                )
+
+        if errors:
+            raise ValidationError(errors)
 
 class TourAllowance(models.Model):
     STATUS_CHOICES = {

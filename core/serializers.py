@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import Permission
-from core.models import Lookup, Role, AuditLog
+from core.models import Lookup, Role, AuditLog, CompanyProfile
 from users.serializers import PermissionSerializer
 
 
@@ -26,4 +26,10 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AuditLog
+        fields = '__all__'
+
+
+class CompanyProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CompanyProfile
         fields = '__all__'

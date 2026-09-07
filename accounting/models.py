@@ -316,6 +316,14 @@ class Voucher(models.Model):
     class Meta:
         db_table = 'accounting_vouchers'
         ordering = ['-voucher_date', '-id']
+        indexes = [
+            # Every ledger figure filters on POSTED within a period;
+            # voucher_date alone is indexed but status is not.
+            models.Index(fields=['status', 'voucher_date'],
+                         name='voucher_status_date_idx'),
+            models.Index(fields=['voucher_type', 'voucher_date'],
+                         name='voucher_type_date_idx'),
+        ]
 
     def __str__(self):
         return f"{self.voucher_number} [{self.voucher_type}] - {self.voucher_date} ({self.status})"
@@ -441,6 +449,13 @@ class PaymentRecord(models.Model):
     class Meta:
         db_table = 'accounting_payment_records'
         ordering = ['-payment_date', '-id']
+        indexes = [
+            # Collections are always read as "receipts within a date range".
+            models.Index(fields=['payment_type', 'payment_date'],
+                         name='payrec_type_date_idx'),
+            models.Index(fields=['party_type', 'party_id'],
+                         name='payrec_party_idx'),
+        ]
 
     def __str__(self):
         return f"{self.receipt_no} - {self.payment_type} ({self.amount} BDT)"

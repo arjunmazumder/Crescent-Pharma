@@ -130,7 +130,9 @@ class VoucherSerializer(serializers.ModelSerializer):
     entries = JournalEntrySerializer(many=True, read_only=True)
     period_name = serializers.CharField(source='period.name', read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
     posted_by_username = serializers.CharField(source='posted_by.username', read_only=True)
+    posted_by_name = serializers.CharField(source='posted_by.display_name', read_only=True)
 
     class Meta:
         model = Voucher
@@ -140,13 +142,15 @@ class VoucherSerializer(serializers.ModelSerializer):
             'status', 'total_debit', 'total_credit',
             'attachment_url', 'is_auto_generated', 'source_module',
             'cheque_number', 'cheque_date', 'cheque_status',
-            'is_reversed', 'created_by_username', 'posted_by_username',
+            'is_reversed', 'created_by_username', 'created_by_name',
+            'posted_by_username', 'posted_by_name',
             'entries', 'created_at'
         ]
         read_only_fields = [
             'id', 'voucher_number', 'period_name', 'status',
             'total_debit', 'total_credit', 'is_auto_generated', 'source_module',
-            'is_reversed', 'created_by_username', 'posted_by_username', 'created_at'
+            'is_reversed', 'created_by_username', 'created_by_name',
+            'posted_by_username', 'posted_by_name', 'created_at'
         ]
 
 
@@ -262,6 +266,7 @@ class BankReconciliationSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source='account.code', read_only=True)
     account_name = serializers.CharField(source='account.name', read_only=True)
     reconciled_by_username = serializers.CharField(source='reconciled_by.username', read_only=True)
+    reconciled_by_name = serializers.CharField(source='reconciled_by.display_name', read_only=True)
 
     class Meta:
         model = BankReconciliation
@@ -269,12 +274,12 @@ class BankReconciliationSerializer(serializers.ModelSerializer):
             'id', 'account', 'account_code', 'account_name', 'statement_date',
             'statement_balance', 'gl_balance', 'unpresented_cheques_total', 'uncredited_deposits_total',
             'adjusted_balance', 'difference', 'status',
-            'attachment_url', 'notes', 'reconciled_by_username', 'created_at'
+            'attachment_url', 'notes', 'reconciled_by_username', 'reconciled_by_name', 'created_at'
         ]
         read_only_fields = [
             'id', 'account_code', 'account_name', 'gl_balance',
             'unpresented_cheques_total', 'uncredited_deposits_total',
-            'adjusted_balance', 'difference', 'status', 'reconciled_by_username', 'created_at'
+            'adjusted_balance', 'difference', 'status', 'reconciled_by_username', 'reconciled_by_name', 'created_at'
         ]
 
 

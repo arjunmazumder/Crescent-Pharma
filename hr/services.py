@@ -4,11 +4,14 @@ import calendar
 from datetime import date, timedelta
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 from django.contrib.auth import get_user_model
 from hr.models import (
     OfficeLocation, Attendance, SalaryStructure,
     Payroll, PayrollApproval, Loan, TourAllowance,
-    Holiday, WeekendConfig, LeaveRequest
+    Holiday, WeekendConfig, LeaveRequest,
+    TAComponent, EmployeeTARate, AllowanceBill, AllowanceBillLine,
+    BonusType
 )
 from core.models import Lookup
 
@@ -190,10 +193,18 @@ class AttendanceService:
 
 class PayrollService:
     @staticmethod
-    def calculate_user_payroll(user, month, year, generated_by=None, current_approver_role=None):
+    def calculate_user_payroll(
+        user, month, year, generated_by=None, current_approver_role=None,
+        include_bonus=False, bonus_type=None
+    ):
         """
         Computes monthly payroll for a specific user based on SalaryStructure,
-        working days, absent days, active loans, and approved tour allowances.
+        working days, absent days, and active loans.
+
+        TA and DA are not part of salary; they are settled on the AllowanceBill.
+
+        A festival bonus is included only when include_bonus is True, since Eid
+        dates move each year and the admin decides which payroll run carries it.
         """
         # 1. Fetch latest active SalaryStructure
         salary_structure = SalaryStructure.objects.filter(
@@ -246,30 +257,22 @@ class PayrollService:
         ).values('date').distinct().count()
         unpaid_deduction = (Decimal(absent_days) * per_day_salary).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-        # 5. Aggregate approved Tour Allowances
-        tour_qs = TourAllowance.objects.filter(
-            user=user,
-            date__year=year,
-            date__month=month,
-            status=TourAllowance.STATUS_CHOICES['APPROVED']
-        )
-        
+        # 5. TA and DA are no longer part of salary.
+        # They are paid on their own monthly document (AllowanceBill), which has
+        # its own approval and its own ledger voucher. These two fields stay on
+        # Payroll as zeros so existing consumers of the payslip response keep
+        # working; they are deprecated and will be dropped in a later release.
+        total_ta_allowance = Decimal('0.00')
         total_tour_allowance = Decimal('0.00')
-        for t in tour_qs:
-            total_tour_allowance += Decimal(str(t.total_amount))
-        total_tour_allowance = total_tour_allowance.quantize(Decimal('0.01'))
-
-        # Daily TA allowance from structure
-        daily_ta = Decimal(str(salary_structure.daily_ta_allowance))
-        present_days = working_days_count - absent_days
-        total_ta_allowance = (daily_ta * Decimal(max(0, present_days))).quantize(Decimal('0.01'))
 
         # 6. Check Active Loans & Calculate EMI deduction
+        # An employee may hold only one open loan at a time (enforced by a database
+        # constraint on Loan), but order explicitly so this stays deterministic.
         active_loan = Loan.objects.filter(
             user=user,
             remaining_amount__gt=0,
             deduction_start_date__lte=date(year, month, total_days_in_month)
-        ).first()
+        ).order_by('deduction_start_date', 'id').first()
 
         loan_deduction = Decimal('0.00')
         if active_loan:
@@ -277,9 +280,36 @@ class PayrollService:
             remaining = Decimal(str(active_loan.remaining_amount))
             loan_deduction = min(emi, remaining).quantize(Decimal('0.01'))
 
-        # 7. Total Payable Salary Amount
+        # 7. Festival bonus, as a percentage of basic salary. Every employee on
+        # the run receives it: there is no length-of-service or attendance test.
+        resolved_bonus_type = None
+        bonus_percentage = Decimal('0.00')
+        total_bonus = Decimal('0.00')
+
+        if include_bonus:
+            resolved_bonus_type = bonus_type
+            if resolved_bonus_type is None:
+                active_types = list(BonusType.objects.filter(is_active=True)[:2])
+                if len(active_types) == 1:
+                    resolved_bonus_type = active_types[0]
+                elif not active_types:
+                    raise ValueError(
+                        "Cannot include a bonus: no active BonusType is configured."
+                    )
+                else:
+                    raise ValueError(
+                        "More than one active BonusType exists. Specify which bonus to pay."
+                    )
+
+            bonus_percentage = Decimal(str(resolved_bonus_type.percentage_of_basic or '0.00'))
+            total_bonus = (
+                base_salary * bonus_percentage / Decimal('100')
+            ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        # 8. Total Payable Salary Amount.
+        # TA and DA are deliberately absent: they are settled on the TA/DA bill.
         gross_earnings = (base_salary + housing_allowance + transport_allowance +
-                          medical_benefits + utility_allowance + total_ta_allowance + total_tour_allowance)
+                          medical_benefits + utility_allowance + total_bonus)
         total_deductions = unpaid_deduction + loan_deduction
         net_payable = max(Decimal('0.00'), gross_earnings - total_deductions).quantize(Decimal('0.01'))
 
@@ -309,11 +339,326 @@ class PayrollService:
                     'unpaid_deduction': unpaid_deduction,
                     'total_ta_allowance': total_ta_allowance,
                     'total_tour_allowance': total_tour_allowance,
-                    'loan_deduction': loan_deduction
+                    'loan_deduction': loan_deduction,
+                    'bonus_type': resolved_bonus_type,
+                    'bonus_percentage': bonus_percentage,
+                    'total_bonus': total_bonus
                 }
             )
 
         return payroll
+
+
+class AllowanceEligibilityService:
+    """
+    Decides which days and which tours actually earn an allowance.
+
+    The rule: allowances are earned only on days the employee genuinely worked
+    in the field. Public holidays, weekly off-days, approved leave and absences
+    all earn nothing.
+
+    Note this counts *observed* attendance rather than deriving a day count from
+    the calendar. Deriving is what the old payroll TA calculation did, and it
+    quietly paid TA for approved-leave days, because leave is not absence.
+    """
+
+    ATTENDED_STATUSES = [
+        Attendance.STATUS_CHOICES['PRESENT'],
+        Attendance.STATUS_CHOICES['LATE'],
+    ]
+
+    @staticmethod
+    def get_calendar(year=None, month=None):
+        """
+        Returns (holiday_dates, active_weekend_weekdays). Restricted to one
+        month when year and month are given, otherwise every holiday on record.
+        """
+        holiday_qs = Holiday.objects.all()
+        if year and month:
+            holiday_qs = holiday_qs.filter(date__year=year, date__month=month)
+
+        holidays = set(holiday_qs.values_list('date', flat=True))
+        weekend_days = set(
+            WeekendConfig.objects.filter(is_active=True).values_list('day_of_week', flat=True)
+        )
+        return holidays, weekend_days
+
+    @staticmethod
+    def get_non_payable_reason(target_date, holidays=None, weekend_days=None):
+        """
+        Returns None when the date earns an allowance, or a readable reason when
+        it does not. Pass pre-loaded sets to avoid a query per row.
+        """
+        if target_date is None:
+            return "No date recorded."
+
+        if holidays is None:
+            holiday = Holiday.objects.filter(date=target_date).first()
+            if holiday:
+                return f"{target_date} is a public holiday ({holiday.name})."
+        elif target_date in holidays:
+            return f"{target_date} is a public holiday."
+
+        if weekend_days is None:
+            weekend_days = set(
+                WeekendConfig.objects.filter(is_active=True).values_list('day_of_week', flat=True)
+            )
+        if target_date.weekday() in weekend_days:
+            return f"{target_date} is a weekly off-day ({target_date.strftime('%A')})."
+
+        return None
+
+    @staticmethod
+    def get_eligible_days(user, month, year):
+        """
+        The dates in the month on which the employee attended work and which are
+        neither a public holiday nor a weekly off-day. Returned sorted.
+        """
+        holidays, weekend_days = AllowanceEligibilityService.get_calendar(year, month)
+
+        attended = (
+            Attendance.objects
+            .filter(
+                user=user,
+                date__year=year,
+                date__month=month,
+                status__in=AllowanceEligibilityService.ATTENDED_STATUSES
+            )
+            .values_list('date', flat=True)
+            .distinct()
+        )
+
+        return [
+            day for day in sorted(set(attended))
+            if day not in holidays and day.weekday() not in weekend_days
+        ]
+
+    @staticmethod
+    def filter_payable_tours(user, month, year):
+        """Approved tours in the month, excluding any dated on a holiday or off-day."""
+        holidays, weekend_days = AllowanceEligibilityService.get_calendar(year, month)
+
+        tours = TourAllowance.objects.filter(
+            user=user,
+            date__year=year,
+            date__month=month,
+            status=TourAllowance.STATUS_CHOICES['APPROVED']
+        ).order_by('date', 'id')
+
+        return [
+            tour for tour in tours
+            if AllowanceEligibilityService.get_non_payable_reason(
+                tour.date, holidays, weekend_days
+            ) is None
+        ]
+
+
+class TAConfigService:
+    """
+    Resolves which TA rates apply to an employee on a given date.
+
+    Rates are effective-dated, so an employee can have several rows per
+    component over time. Only the most recent row on or before the target date
+    counts, mirroring how SalaryStructure is resolved for payroll.
+    """
+
+    @staticmethod
+    def get_effective_rates(user, on_date=None):
+        """
+        Returns the applicable EmployeeTARate for each active component,
+        ordered by the component's display order. Components the employee has
+        no rate for are simply absent.
+        """
+        on_date = on_date or timezone.now().date()
+
+        rows = (
+            EmployeeTARate.objects
+            .filter(
+                user=user,
+                is_active=True,
+                effective_from__lte=on_date,
+            )
+            .filter(Q(component__is_active=True) | Q(component__isnull=True))
+            .select_related('component')
+            .order_by('component__display_order', 'component_id', '-effective_from', '-id')
+        )
+
+        # Rows arrive newest-first within each component, so the first row seen
+        # for a component is the one in force on that date.
+        effective = {}
+        for row in rows:
+            if row.component_id not in effective:
+                effective[row.component_id] = row
+
+        return list(effective.values())
+
+    @staticmethod
+    def get_total_daily_rate(user, on_date=None):
+        """Sum of every applicable component rate for one working day."""
+        rates = TAConfigService.get_effective_rates(user, on_date=on_date)
+        total = sum((Decimal(str(r.daily_amount)) for r in rates), Decimal('0.00'))
+        return total.quantize(Decimal('0.01'))
+
+
+class AllowanceBillService:
+    """
+    Builds and settles the monthly TA/DA bill, which is paid separately from
+    the payslip.
+    """
+
+    @staticmethod
+    def generate(user, month, year, generated_by=None):
+        """
+        Rebuilds this employee's bill for the month from current attendance,
+        rates and approved tours.
+
+        Refuses to touch an APPROVED or PAID bill. Regenerating a settled
+        document is how payroll silently reverts a paid month today; this does
+        not repeat that.
+        """
+        month = int(month)
+        year = int(year)
+
+        existing = AllowanceBill.objects.filter(user=user, month=month, year=year).first()
+        if existing and existing.is_settled:
+            raise ValueError(
+                f"Bill {existing.bill_number} for {month}/{year} is already {existing.status} "
+                "and cannot be regenerated."
+            )
+
+        eligible_days = AllowanceEligibilityService.get_eligible_days(user, month, year)
+        day_count = len(eligible_days)
+
+        # Rates are resolved as at the last eligible day, so a mid-month raise
+        # applies from the month it took effect.
+        rate_date = eligible_days[-1] if eligible_days else date(
+            year, month, calendar.monthrange(year, month)[1]
+        )
+        rates = TAConfigService.get_effective_rates(user, on_date=rate_date)
+        payable_tours = AllowanceEligibilityService.filter_payable_tours(user, month, year)
+
+        with transaction.atomic():
+            bill, _ = AllowanceBill.objects.update_or_create(
+                user=user,
+                month=month,
+                year=year,
+                defaults={
+                    'status': AllowanceBill.STATUS_CHOICES['DRAFT'],
+                    'eligible_days': day_count,
+                    'generated_by': generated_by,
+                    'rejection_reason': None,
+                }
+            )
+
+            # Rebuilt from scratch every time, so removing a tour or a rate
+            # cannot leave an orphan line behind.
+            bill.lines.all().delete()
+
+            total_ta = Decimal('0.00')
+            for rate in rates:
+                amount = (Decimal(str(rate.daily_amount)) * Decimal(day_count)).quantize(Decimal('0.01'))
+                if amount <= Decimal('0.00'):
+                    continue
+                comp_name = rate.component.name if rate.component else "Daily TA Allowance"
+                AllowanceBillLine.objects.create(
+                    bill=bill,
+                    source=AllowanceBillLine.SOURCE_CHOICES['DAILY_RATE'],
+                    component=rate.component,
+                    days=day_count,
+                    rate=rate.daily_amount,
+                    amount=amount,
+                    description=f"{comp_name} @ {rate.daily_amount}/day x {day_count} day(s)"
+                )
+                total_ta += amount
+
+            total_da = Decimal('0.00')
+            for tour in payable_tours:
+                amount = Decimal(str(tour.total_amount or '0.00')).quantize(Decimal('0.01'))
+                if amount <= Decimal('0.00'):
+                    continue
+                AllowanceBillLine.objects.create(
+                    bill=bill,
+                    source=AllowanceBillLine.SOURCE_CHOICES['TOUR'],
+                    tour_allowance=tour,
+                    days=1,
+                    rate=amount,
+                    amount=amount,
+                    description=f"Tour {tour.from_location} to {tour.to_location} on {tour.date} ({tour.mode_of_journey})"
+                )
+                total_da += amount
+
+            bill.total_daily_ta = total_ta.quantize(Decimal('0.01'))
+            bill.total_tour_da = total_da.quantize(Decimal('0.01'))
+            bill.total_amount = (total_ta + total_da).quantize(Decimal('0.01'))
+            bill.save()
+
+        return bill
+
+    @staticmethod
+    def approve(bill, approved_by, notes=""):
+        if bill.status == AllowanceBill.STATUS_CHOICES['PAID']:
+            raise ValueError(f"Bill {bill.bill_number} is already PAID.")
+        if bill.status == AllowanceBill.STATUS_CHOICES['APPROVED']:
+            raise ValueError(f"Bill {bill.bill_number} is already APPROVED.")
+
+        bill.status = AllowanceBill.STATUS_CHOICES['APPROVED']
+        bill.approved_by = approved_by
+        bill.approved_at = timezone.now()
+        if notes:
+            bill.notes = notes
+        bill.save(update_fields=['status', 'approved_by', 'approved_at', 'notes', 'updated_at'])
+        return bill
+
+    @staticmethod
+    def reject(bill, rejected_by, reason=""):
+        if bill.status == AllowanceBill.STATUS_CHOICES['PAID']:
+            raise ValueError(f"Bill {bill.bill_number} is already PAID and cannot be rejected.")
+
+        bill.status = AllowanceBill.STATUS_CHOICES['REJECTED']
+        bill.approved_by = rejected_by
+        bill.approved_at = timezone.now()
+        bill.rejection_reason = reason or "Rejected by approver"
+        bill.save(update_fields=[
+            'status', 'approved_by', 'approved_at', 'rejection_reason', 'updated_at'
+        ])
+        return bill
+
+    @staticmethod
+    def disburse(bill, user=None):
+        """
+        Marks the bill PAID and posts it to the General Ledger:
+        Debit 6120 Travel & Tour Allowances, Credit 1112 Bank.
+        """
+        if bill.status == AllowanceBill.STATUS_CHOICES['PAID']:
+            raise ValueError(f"Bill {bill.bill_number} is already PAID.")
+        if bill.status != AllowanceBill.STATUS_CHOICES['APPROVED']:
+            raise ValueError(
+                f"Bill {bill.bill_number} must be APPROVED before disbursement. "
+                f"Current status: {bill.status}."
+            )
+        if bill.total_amount <= Decimal('0.00'):
+            raise ValueError(f"Bill {bill.bill_number} has no payable amount.")
+
+        with transaction.atomic():
+            bill.status = AllowanceBill.STATUS_CHOICES['PAID']
+            bill.paid_at = timezone.now()
+            bill.save(update_fields=['status', 'paid_at', 'updated_at'])
+
+            try:
+                from accounting.services import AccountingIntegrationService
+                voucher = AccountingIntegrationService.post_allowance_bill_disbursement(
+                    bill=bill, user=user
+                )
+                bill.accounting_voucher = voucher
+                bill.save(update_fields=['accounting_voucher', 'updated_at'])
+            except ValueError:
+                logger.exception(
+                    "Failed to post TA/DA voucher for bill %s (%s, %s/%s). "
+                    "The bill was marked PAID but the General Ledger was not updated.",
+                    bill.bill_number, bill.user.username, bill.month, bill.year
+                )
+
+        return bill
 
 
 class LeaveService:

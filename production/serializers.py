@@ -52,8 +52,8 @@ class BOMItemCreateSerializer(serializers.ModelSerializer):
 class BOMHeaderSerializer(serializers.ModelSerializer):
     items = BOMItemSerializer(many=True, read_only=True)
     finished_product_details = ProductSerializer(source='finished_product', read_only=True)
-    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.display_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
 
     class Meta:
         model = BOMHeader
@@ -133,8 +133,8 @@ class ProductionLineSerializer(serializers.ModelSerializer):
 
 
 class ProductionPlanSerializer(serializers.ModelSerializer):
-    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
-    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.display_name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.display_name', read_only=True)
     batches_count = serializers.IntegerField(source='batches.count', read_only=True)
 
     class Meta:
@@ -192,8 +192,8 @@ class MaterialIssueItemSerializer(serializers.ModelSerializer):
 class MaterialIssueSlipSerializer(serializers.ModelSerializer):
     items = MaterialIssueItemSerializer(many=True, read_only=True)
     warehouse_name = serializers.CharField(source='warehouse.name', read_only=True)
-    issued_by_name = serializers.CharField(source='issued_by.get_full_name', read_only=True)
-    received_by_name = serializers.CharField(source='received_by.get_full_name', read_only=True)
+    issued_by_name = serializers.CharField(source='issued_by.display_name', read_only=True)
+    received_by_name = serializers.CharField(source='received_by.display_name', read_only=True)
 
     class Meta:
         model = MaterialIssueSlip
@@ -220,7 +220,7 @@ class MaterialIssueSlipSerializer(serializers.ModelSerializer):
 class ProductionStageLogSerializer(serializers.ModelSerializer):
     stage_display = serializers.CharField(source='get_stage_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    operator_name = serializers.CharField(source='operator.get_full_name', read_only=True)
+    operator_name = serializers.CharField(source='operator.display_name', read_only=True)
 
     class Meta:
         model = ProductionStageLog
@@ -249,7 +249,7 @@ class ProductionStageLogSerializer(serializers.ModelSerializer):
 class FinishedGoodsTransferSerializer(serializers.ModelSerializer):
     finished_product_name = serializers.CharField(source='finished_product.name', read_only=True)
     destination_warehouse_name = serializers.CharField(source='destination_warehouse.name', read_only=True)
-    received_by_name = serializers.CharField(source='received_by.get_full_name', read_only=True)
+    received_by_name = serializers.CharField(source='received_by.display_name', read_only=True)
     voucher_number = serializers.CharField(source='accounting_voucher.voucher_number', read_only=True)
 
     class Meta:
@@ -288,7 +288,7 @@ class ProductionBatchListSerializer(serializers.ModelSerializer):
     finished_product_code = serializers.CharField(source='finished_product.unique_id', read_only=True)
     production_line_code = serializers.CharField(source='production_line.line_code', read_only=True)
     yield_percentage = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
-    supervisor_name = serializers.CharField(source='assigned_supervisor.get_full_name', read_only=True)
+    supervisor_name = serializers.CharField(source='assigned_supervisor.display_name', read_only=True)
 
     class Meta:
         model = ProductionBatch

@@ -180,6 +180,13 @@ class CustomerOrder(models.Model):
     class Meta:
         db_table = 'customer_orders'
         ordering = ['-id']
+        indexes = [
+            # Dashboard and reports scan by date range, excluding cancelled.
+            models.Index(fields=['order_date', 'status'],
+                         name='cust_order_date_status_idx'),
+            models.Index(fields=['customer', 'order_date'],
+                         name='cust_order_cust_date_idx'),
+        ]
 
     def __str__(self):
         return f"{self.order_number or 'Draft'} - {self.customer.name} [{self.status}]"

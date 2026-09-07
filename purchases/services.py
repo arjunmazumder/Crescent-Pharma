@@ -1,3 +1,4 @@
+import logging
 import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from django.db import transaction
@@ -17,6 +18,8 @@ from accounting.models import (
     Voucher, VoucherType, VoucherStatus, JournalEntry
 )
 from accounting.services import VoucherPostingService
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -282,9 +285,12 @@ class LCManagementService:
                     )
                     lc.margin_voucher = voucher
                     lc.save(update_fields=['margin_voucher'])
-                except Exception as e:
-                    # Log or continue without failing LC creation if accounting periods are unconfigured in test
-                    pass
+                except ValueError:
+                    logger.exception(
+                        "Failed to post LC margin voucher for %s. "
+                        "The LC was opened but the margin payment was not posted to the General Ledger.",
+                        lc.letter_of_credit_number
+                    )
 
             return lc
 
@@ -552,8 +558,17 @@ class GoodsReceiptService:
             if grn.letter_of_credit and grn.letter_of_credit.status != LetterOfCreditStatus.RECEIVED:
                 try:
                     LCManagementService.advance_lc_stage(grn.letter_of_credit, LetterOfCreditStatus.RECEIVED, user=user)
-                except Exception:
-                    pass
+                except ValueError:
+                    # An LC still early in the pipeline cannot legally jump to
+                    # RECEIVED. The GRN is still valid, but the LC is now behind
+                    # the goods, so someone has to move it manually.
+                    logger.warning(
+                        "GRN %s received against LC %s, but the LC could not advance to RECEIVED "
+                        "from its current stage '%s'. The LC stage needs manual correction.",
+                        grn.goods_received_note_number,
+                        grn.letter_of_credit.letter_of_credit_number,
+                        grn.letter_of_credit.status
+                    )
 
             # 4. Post Double-Entry Accounting Purchase Bill Voucher
             supplier = grn.purchase_order.supplier if grn.purchase_order else (grn.letter_of_credit.supplier if grn.letter_of_credit else None)
@@ -615,9 +630,12 @@ class GoodsReceiptService:
                         auto_post=True
                     )
                     grn.accounting_voucher = voucher
-                except Exception as e:
-                    # Keep GRN valid if accounting fiscal periods are unseeded
-                    pass
+                except ValueError:
+                    logger.exception(
+                        "Failed to post purchase bill voucher for GRN %s. "
+                        "Stock was received but Accounts Payable was not updated.",
+                        grn.goods_received_note_number
+                    )
 
             grn.status = GoodsReceivedNoteStatus.APPROVED
             grn.approved_by = user
